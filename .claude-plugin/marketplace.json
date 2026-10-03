@@ -1,0 +1,14 @@
+{
+  "name": "clearance",
+  "owner": { "name": "wombraider" },
+  "metadata": {
+    "description": "clearance: machine-wide resource observability and admission for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "clearance",
+      "source": "./",
+      "description": "See every Claude session's resource use on this machine, and get cleared, held or diverted (cloud, Remote Control, ssh) before starting more sessions or subagents."
+    }
+  ]
+}
