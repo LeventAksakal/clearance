@@ -3,6 +3,8 @@ import { DEFAULTS, advance } from './gate.ts'
 import { paneLines, paneModel, shortPath } from './pane.ts'
 import type { SessionSample, Snapshot } from './snapshot.ts'
 
+// A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5, sessionBaselineGB: 0.7 }
 const row = (sessionId: string, over: Partial<SessionSample> = {}): SessionSample => ({
   sessionId,
   pid: 1,
@@ -30,7 +32,7 @@ const snap: Snapshot = {
 
 describe('pane model', () => {
   test('sorts sessions by memory and marks this one', () => {
-    const m = paneModel(snap, advance(undefined, snap, DEFAULTS), DEFAULTS, 'aaaaaaaa-small', true, 100_000)
+    const m = paneModel(snap, advance(undefined, snap, FIXED), FIXED, 'aaaaaaaa-small', true, 100_000)
     expect(m.sessions.map(s => s.id)).toEqual(['bbbbbbbb', 'aaaaaaaa'])
     expect(m.sessions[0]).toMatchObject({ where: 'Code\\bbbbbbbb-big', agents: 2, progressAgoS: 60, top: 'node.exe 0.1', isSelf: false })
     expect(m.sessions[1]).toMatchObject({ agents: null, progressAgoS: null, top: '', isSelf: true })
@@ -45,7 +47,7 @@ describe('pane model', () => {
 
 describe('pane lines', () => {
   test('lead with the state, then the machine, then one row per session', () => {
-    const m = paneModel(snap, advance(undefined, snap, DEFAULTS), DEFAULTS, 'aaaaaaaa-small', false, 100_000)
+    const m = paneModel(snap, advance(undefined, snap, FIXED), FIXED, 'aaaaaaaa-small', false, 100_000)
     const lines = paneLines(m, 100, 101_000)
     expect(lines[0]).toEqual({ text: 'CLEARED · headroom 2.5 GB · 3 more sessions', tone: 'ok' })
     expect(lines[1]?.text).toBe('available 4.0 of 16.0 GB (floor 1.5) · commit 30.0/48.0 GB (ceiling 90%)')
@@ -61,7 +63,7 @@ describe('pane lines', () => {
 
   test('list the reasons under HOLD', () => {
     const tight = { ...snap, machine: { ...snap.machine, availableMB: 1000 } }
-    const m = paneModel(tight, advance(undefined, tight, DEFAULTS), DEFAULTS, 'x', false, 100_000)
+    const m = paneModel(tight, advance(undefined, tight, FIXED), FIXED, 'x', false, 100_000)
     const lines = paneLines(m, 100, 100_000)
     expect(lines[0]).toEqual({ text: 'HOLD · headroom 0.0 GB', tone: 'warn' })
     expect(lines[1]).toEqual({ text: '  available 1.0 GB, floor 1.5 GB + 0.7 GB ask', tone: 'warn' })

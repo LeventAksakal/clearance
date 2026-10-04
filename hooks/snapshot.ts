@@ -14,7 +14,12 @@ export type MachineSample = {
   availableMB: number
   commitMB: number
   commitLimitMB: number
+  /** Hard page reads per second over the last interval (step 7); absent from an older sampler or on its first sample. */
+  pagesInPerSec?: number
 }
+
+/** A running container, from the sampler's docker read (every 6th tick). */
+export type ContainerSample = { name: string; project?: string | null; workingDir?: string | null; ports?: string; memMB: number }
 
 export type ChildSample = { pid: number; name: string; privateMB: number }
 
@@ -30,6 +35,8 @@ export type SessionSample = {
   /** From the session's presence file; absent when it has none (a session without the mod). */
   agentsInFlight?: number
   reservedMB?: number
+  /** Working: a turn in flight or a subagent running. Absent from an older mod, which counts as idle. */
+  busy?: boolean
   lastProgressAt?: number
 }
 
@@ -41,6 +48,11 @@ export type Snapshot = {
   intervalMs: number
   machine: MachineSample
   sessions: SessionSample[]
+  /** The Claude desktop app's own processes (its Electron tree less the sessions). */
+  desktop?: { privateMB: number; procs: number }
+  /** The WSL / Docker VM (`vmmem*`) and what the containers in it use; `t` is when the containers were read. */
+  dockerVm?: { privateMB: number; containersMB: number; t: number }
+  containers?: ContainerSample[]
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -110,6 +122,7 @@ export type Shown = { state: GateState; headroomMB: number; fits: number }
 export const statusLine = (s: Snapshot | undefined, now: number, shown: Shown | undefined): string => {
   if (!s || !shown) return 'clearance · waiting for a snapshot'
   if (!isFresh(s, now)) return `clearance · snapshot ${Math.round(ageMs(s, now) / 1000)} s old`
+  if (shown.state === 'THRASH') return 'clearance ▲ THRASH'
   if (shown.state === 'HOLD') return `clearance ■ HOLD ${gb(shown.headroomMB)} GB`
   return `clearance ✓ ${gb(shown.headroomMB)} GB · ${shown.fits} more`
 }

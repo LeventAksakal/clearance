@@ -1,5 +1,57 @@
-/** What the AbovePrompt band draws while the machine is on HOLD; null hides it. */
+/** The gate view's HOLD reasons (the badge and the pane show them); null while cleared. */
 export type ClearanceBand = { state: 'HOLD'; headroomMB: number; reasons: string[] }
+
+/** One session in the chip's hover card. */
+export type ClearanceBadgeRow = {
+  /** The session's folder, last segment. */
+  where: string
+  selfMB: number
+  childMB: number
+  /** Subagents in flight; null for a session without the mod. */
+  agents: number | null
+  isSelf: boolean
+  /** Its attributed containers' memory. */
+  containersMB: number
+}
+
+/** The band's badge, always up: the marshaller's mood and the line beside it. */
+export type ClearanceBadge = {
+  mood: 'CLEARED' | 'HOLD' | 'THRASH' | 'WAITING'
+  /** Rounded to 0.1 GB; null while WAITING. */
+  headroomMB: number | null
+  /** More sessions that fit now. */
+  fits: number
+  /** More general-purpose subagents that fit now (their forecast is smaller than a session's). */
+  agentFits: number
+  /** RAM in use, percent of total, and what is available (free plus standby); 0 while WAITING. */
+  usedPct: number
+  availableMB: number
+  totalMB: number
+  sessions: number
+  agents: number
+  /** Why it holds; empty unless HOLD. */
+  reasons: string[]
+  /** Why there are no numbers while WAITING; empty otherwise. */
+  note: string
+  /** The gate's numbers, so the chip can say why it holds. */
+  floorMB: number
+  agentAskMB: number
+  sessionAskMB: number
+  /** Every session's use, largest first, for the hover card. */
+  rows: ClearanceBadgeRow[]
+  /** RAM in use that no session owns: the desktop app, WSL, browsers, the rest of the machine. */
+  otherMB: number
+  /** RAM in use, percent, over the last samples, oldest first: the band's sparkline. */
+  ramTrail: number[]
+  /** Hard page reads per second in the latest sample; null when the sampler doesn't read it. */
+  pagesInPerSec: number | null
+  /** What the floor rests on (learned from paging, or the policy). */
+  floorBasis: string
+  /** The desktop app, the WSL/Docker VM and the containers no session owns, MB. */
+  desktopMB: number
+  dockerVmMB: number
+  unattributedContainersMB: number
+}
 
 /** One session row of the /clearance pane. */
 export type ClearancePaneSession = {
@@ -23,21 +75,24 @@ export type ClearancePane = {
   t: number
   epoch: number
   isScribe: boolean
-  state: 'CLEARED' | 'HOLD'
+  state: 'CLEARED' | 'HOLD' | 'THRASH'
   headroomMB: number
   fits: number
   reasons: string[]
   machine: { totalMB: number; availableMB: number; commitMB: number; commitLimitMB: number }
+  /** `minFreeGB` is the floor in effect (the auto floor resolved). */
   limits: { minFreeGB: number; maxCommitPct: number; maxSessions: number; maxAgents: number }
   agents: number
   reservedMB: number
   sessions: ClearancePaneSession[]
+  /** Memory no session owns, and what the floor rests on: one line each. */
+  others: string[]
 }
 
 declare module 'claude-code' {
   interface PluginState {
     clearance: {
-      band: ClearanceBand | null
+      badge: ClearanceBadge | null
       pane: ClearancePane | null
       /** The session-start check ran (once per session, not again on a hot reload). */
       startChecked: boolean

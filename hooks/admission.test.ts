@@ -1,9 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { AGENT_DEFAULT_MB, budgetLine, decideSpawn, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
+import { budgetLine, decideSpawn, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { DEFAULTS } from './gate.ts'
 import { liveReservations } from './presence.ts'
 import type { SessionSample, Snapshot } from './snapshot.ts'
 
+const MB = 307
+
+// A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5, sessionBaselineGB: 0.7 }
 const row = (sessionId: string, over: Partial<SessionSample> = {}): SessionSample => ({
   sessionId,
   pid: 1,
@@ -28,15 +32,15 @@ const snap = (availableMB: number, sessions: SessionSample[] = [row('aaaaaaaa-1'
 
 describe('spawn gate', () => {
   test('lets a subagent through when it fits', () => {
-    expect(decideSpawn(snap(4096), DEFAULTS, 'Explore', AGENT_DEFAULT_MB, 0).allow).toBe(true)
+    expect(decideSpawn(snap(4096), FIXED, 'Explore', MB, 0).allow).toBe(true)
   })
 
   test('allows when the census is down: never block work on a missing sample', () => {
-    expect(decideSpawn(undefined, DEFAULTS, 'Explore', AGENT_DEFAULT_MB, 0)).toEqual({ allow: true, verdict: undefined })
+    expect(decideSpawn(undefined, FIXED, 'Explore', MB, 0)).toEqual({ allow: true, verdict: undefined })
   })
 
   test('denies over the floor with the forecast, what fits and the ways out', () => {
-    const d = decideSpawn(snap(1700), DEFAULTS, 'general-purpose', AGENT_DEFAULT_MB, 0)
+    const d = decideSpawn(snap(1700), FIXED, 'general-purpose', MB, 0)
     expect(d.allow).toBe(false)
     if (d.allow) return
     expect(d.deny).toBe(
@@ -47,10 +51,10 @@ describe('spawn gate', () => {
   })
 
   test("counts this session's reservations and newest spawns before the next sample", () => {
-    expect(decideSpawn(snap(2400), DEFAULTS, 'Explore', AGENT_DEFAULT_MB, 0).allow).toBe(true)
-    expect(decideSpawn(snap(2400), DEFAULTS, 'Explore', AGENT_DEFAULT_MB, 600).allow).toBe(false)
+    expect(decideSpawn(snap(2400), FIXED, 'Explore', MB, 0).allow).toBe(true)
+    expect(decideSpawn(snap(2400), FIXED, 'Explore', MB, 600).allow).toBe(false)
     const crowded = withOwnAgents(snap(12_000), 'aaaaaaaa-1', 8)
-    const d = decideSpawn(crowded, DEFAULTS, 'Explore', AGENT_DEFAULT_MB, 0)
+    const d = decideSpawn(crowded, FIXED, 'Explore', MB, 0)
     expect(d.allow).toBe(false)
     expect(d.verdict?.reasons).toEqual(['8 subagents, ceiling 8'])
   })
@@ -58,7 +62,7 @@ describe('spawn gate', () => {
 
 describe('budget line', () => {
   test('names the budget and asks for no heavy processes', () => {
-    expect(budgetLine(snap(4096), DEFAULTS, 'Explore', 307)).toBe(
+    expect(budgetLine(snap(4096), FIXED, 'Explore', 307)).toBe(
       'clearance: this machine is memory-constrained. Your budget as Explore is about 0.3 GB (machine headroom 2.5 GB, 0 subagents in flight). ' +
         'Avoid starting heavy processes (dev servers, test watchers, browsers, docker) unless the task needs them, and stop any you start before you finish.',
     )
@@ -67,15 +71,15 @@ describe('budget line', () => {
 
 describe('headroom tool', () => {
   test('reports the census, the table and what fits', () => {
-    const text = headroomReport(snap(4096), DEFAULTS, 0, { subagentType: 'Explore', count: 12 }, 12_000)
+    const text = headroomReport(snap(4096), FIXED, 0, { subagentType: 'Explore', count: 12 }, 12_000, () => ({ mb: MB, basis: 'measured' }))
     expect(text).toContain('clearance census (sampled 2 s ago)')
     expect(text).toContain('aaaaaaaa | C:\\Code\\aaaaaaaa-1 | 0.6 | 0.2 | -')
-    expect(text).toContain('subagent Explore: forecast 0.3 GB; CLEARED; at most 8 now')
+    expect(text).toContain('subagent Explore: forecast 0.3 GB (measured); CLEARED; at most 8 now')
     expect(text).toContain('asked for 12 subagents: run 8 now and queue the rest')
   })
 
   test('says so when there is no snapshot', () => {
-    expect(headroomReport(undefined, DEFAULTS, 0, {}, 0)).toContain('no fresh machine snapshot')
+    expect(headroomReport(undefined, FIXED, 0, {}, 0, () => ({ mb: MB, basis: 'measured' }))).toContain('no fresh machine snapshot')
   })
 })
 

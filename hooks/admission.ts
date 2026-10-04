@@ -1,15 +1,10 @@
-import { census, gate, type GateOptions, type Verdict } from './gate.ts'
+import { census, floorMB, gate, type GateOptions, type Verdict } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 
 // Admission (0004, design.md § Hooks): the spawn gate's deny text, the
 // subagent's budget line, the headroom tool's table and the session-start
 // check. Pure: no `$` here.
 
-/** A subagent's cost until history learns it (step 5): subagents run in the parent process, so this is the children they start. */
-export const AGENT_DEFAULT_MB = 307
-
-/** The forecast for one subagent of `subagentType`. History-based forecasts replace this in step 5. */
-export const forecastMB = (_subagentType: string): number => AGENT_DEFAULT_MB
 
 const gb = (mb: number) => (mb / 1024).toFixed(1)
 
@@ -46,25 +41,32 @@ export const budgetLine = (s: Snapshot | undefined, o: GateOptions, subagentType
 export type HeadroomAsk = { subagentType?: string; count?: number }
 
 /** The headroom tool's answer: the census and what fits, as plain text for the model. */
-export const headroomReport = (s: Snapshot | undefined, o: GateOptions, extraReservedMB: number, ask: HeadroomAsk, now: number): string => {
+export const headroomReport = (
+  s: Snapshot | undefined,
+  o: GateOptions,
+  extraReservedMB: number,
+  ask: HeadroomAsk,
+  now: number,
+  mbFor: (type: string) => { mb: number; basis: string },
+): string => {
   if (!s) return 'clearance: no fresh machine snapshot yet (the scribe is starting or gone). Spawns are not gated meanwhile.'
   const type = ask.subagentType ?? 'general-purpose'
-  const mb = forecastMB(type)
+  const { mb, basis } = mbFor(type)
   const agent = gate(s, o, { kind: 'agent', mb }, extraReservedMB)
   const session = gate(s, o, { kind: 'session' }, extraReservedMB)
   const c = census(s)
   const m = s.machine
   const lines = [
     `clearance census (sampled ${Math.max(0, Math.round((now - s.t) / 1000))} s ago)`,
-    `machine: available ${gb(m.availableMB)} GB of ${gb(m.totalMB)} GB (floor ${o.minFreeGB} GB); commit ${gb(m.commitMB)}/${gb(m.commitLimitMB)} GB (ceiling ${o.maxCommitPct}%)`,
+    `machine: available ${gb(m.availableMB)} GB of ${gb(m.totalMB)} GB (floor ${gb(floorMB(o, m.totalMB))} GB); commit ${gb(m.commitMB)}/${gb(m.commitLimitMB)} GB (ceiling ${o.maxCommitPct}%)`,
     `headroom: ${gb(agent.headroomMB)} GB after reservations (${gb(c.reservedMB + extraReservedMB)} GB reserved)`,
     `sessions: ${c.sessions} of ${o.maxSessions}; subagents in flight: ${c.agents} of ${o.maxAgents}`,
     '',
     'session | cwd | self GB | children GB | subagents',
     ...s.sessions.map(r => `${r.sessionId.slice(0, 8)} | ${r.cwd} | ${gb(r.selfMB)} | ${gb(r.childMB)} | ${r.agentsInFlight ?? '-'}`),
     '',
-    `subagent ${type}: forecast ${gb(mb)} GB; ${agent.state}; at most ${agent.fits} now${agent.reasons.length ? ` (${agent.reasons.join('; ')})` : ''}`,
-    `new local session: ${session.state}; at most ${session.fits} now`,
+    `subagent ${type}: forecast ${gb(mb)} GB (${basis}); ${agent.state}; at most ${agent.fits} now${agent.reasons.length ? ` (${agent.reasons.join('; ')})` : ''}`,
+    `new local session: forecast ${o.sessionBaselineGB.toFixed(2)} GB; ${session.state}; at most ${session.fits} now`,
   ]
   if (ask.count !== undefined && ask.count > agent.fits)
     lines.push(`asked for ${ask.count} subagents: run ${agent.fits} now and queue the rest, or ${DIVERT}`)

@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03; steps 1–4 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: v0.1.0, 2026-10-04; all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -39,7 +39,7 @@ Every file has exactly one writer, so nothing needs a lock.
 |---|---|---|---|
 | `scribe/epoch-<n>` | the claimant that wins `CreateNew` | all | `{ sessionId, pid, at }` |
 | `snapshot.json` | sampler.ps1 (temp file + rename) | all sessions, leases mod, lane-supervisor | schema below |
-| `sessions/<sessionId>.json` | that session (the scribe deletes it an hour after the session left the registry: `$.fs` has no delete) | sampler | presence: `{ schema, sessionId, agentsInFlight, reservations, reservedMB, lastProgressAt, t }` |
+| `sessions/<sessionId>.json` | that session (the scribe deletes it an hour after the session left the registry: `$.fs` has no delete) | sampler | presence: `{ schema, sessionId, agentsInFlight, reservations, reservedMB, busy, lastProgressAt, t }` |
 | `history/<yyyy-mm>/<sessionId>.jsonl` | that session | forecaster | one record per finished subagent or session |
 | `logs/<sessionId>.log` | that session | people debugging | the last 200 election and sampler lines |
 
@@ -67,7 +67,7 @@ Every file has exactly one writer, so nothing needs a lock.
     "selfMB": 602, "childMB": 348, "children": 13,
     "topChildren": [{ "pid": 1, "name": "node.exe", "privateMB": 1812, "cmd": "vitest …" }],
     "containers": [{ "name": "ozu_aps_postgres", "project": "core", "memMB": 158 }],
-    "agentsInFlight": 2, "lastProgressAt": 1791036300000            // from presence
+    "agentsInFlight": 2, "busy": true, "lastProgressAt": 1791036300000  // from presence
   }],
   "unattributed": { "containers": [{ "name": "supabase_db_supabase", "project": "supabase", "memMB": 319 }] }
 }
@@ -78,7 +78,7 @@ Every file has exactly one writer, so nothing needs a lock.
 - `commitLimitMB` is read on every sample, because Windows grows the pagefile.
 - A container is attributed through its `com.docker.compose.project.working_dir` label to the session whose `cwd` contains that path. Without the label it lands in `unattributed`, and the convention checks name it.
 - **No machine verdict in schema 1 yet.** Each session runs `gate.ts` on the snapshot and adds its own reservations newer than the sample. The sampler has no thresholds, and the snapshot's one-writer rule keeps sessions from writing it; a `clearance` field moves in when a consumer (the leases mod) needs it.
-- `agentsInFlight`, `reservedMB` and `lastProgressAt` on a session row come from its presence file, and are absent for a session without the mod.
+- `agentsInFlight`, `reservedMB`, `busy` and `lastProgressAt` on a session row come from its presence file, and are absent for a session without the mod.
 
 ### The gate (pure functions, `gate.ts`)
 
@@ -86,7 +86,7 @@ The inputs are the snapshot, this session's reservations and the options:
 
 | Option (`userConfig`) | Default | Meaning |
 |---|---|---|
-| `minFreeGB` | 1.5 | Available RAM that must remain after admitting |
+| `minFreeGB` | 0 (auto: 5% of RAM) | Available RAM that must remain after admitting. Was 1.5; changed 2026-10-04: it held a 15.4 GB machine that runs at 1–2 GB free nearly always (commit 33/46 GB), and THRASH watches real stalls. |
 | `maxCommitPct` | 90 | Commit as a share of the commit limit, after admitting |
 | `maxSessions` | 6 | Count ceiling for local sessions (0002) |
 | `maxAgents` | 8 | Count ceiling for subagents in flight, machine-wide (summed from presence files) |
@@ -95,7 +95,7 @@ The inputs are the snapshot, this session's reservations and the options:
 - **States:**
   - **CLEARED:** every limit holds after adding the forecast.
   - **HOLD:** some limit would break.
-  - **THRASH:** free memory is below half the floor **and** no session has made progress for 5 min. Progress is any tool result or file write recorded in presence.
+  - **THRASH:** free memory is below half the floor **and** no busy session has made progress for 5 min. Progress is any tool result recorded in presence, or a turn starting; a session is busy while a turn is in flight or a subagent runs. A session waiting for its person is idle, not stalled.
 - **THRASH effect:** the band turns red, every spawn is refused, and one toast fires per episode.
 - **Hysteresis:** a state must hold for 2 samples before it changes, so the status line doesn't flicker.
 - **Known gap:** two sessions can admit at the same moment and overshoot. Presence reservations narrow the window (a session records the reservation before it calls `next`), and the next sample corrects it. A ledger owned by the scribe is a v2 fix.
@@ -116,6 +116,7 @@ The inputs are the snapshot, this session's reservations and the options:
 | `classic.SubagentStart` | `additionalContext`: the agent's budget line (S3). |
 | `classic.SubagentStop` | The subagent is no longer in flight. Its reservation runs out on its own after 30 s, by when samples count the memory it brought. (History records: step 5.) |
 | `tool.call` (any, after `next`) | Bump `lastProgressAt` in presence, throttled to once per 15 s. |
+| `turn.start`, `turn.complete` (main loop) | Set and clear `busy` in presence; a turn start counts as progress. |
 | `tool.call` `mcp__clearance__headroom` | The census and forecast table as text (S2). |
 | `command.run` `clearance` | Open the pane. `/clearance check` runs the convention checks. |
 | `session.end` | Remove presence, resign if this session is scribe, flush history. |
@@ -123,7 +124,7 @@ The inputs are the snapshot, this session's reservations and the options:
 ### UI
 
 - **Status line**, always: `clearance ✓ 3.1 GB · 2 more` / `clearance ■ HOLD 0.4 GB` / `clearance ▲ THRASH`.
-- **AbovePrompt band**, only on HOLD or THRASH: one line with the reason and the offload options.
+- **AbovePrompt band**, always up (changed after step 4, at the owner's ask for something as noticeable as token-weather): a 12-frame pixel marshaller and one line. CLEARED waves green paddles (headroom, room for more, census); HOLD crosses amber paddles overhead (headroom, reasons, divert options on a wide band); WAITING dozes grey (no or stale snapshot). THRASH will get its own mood in step 7.
 - **Pane `/clearance`:**
   - a machine row;
   - a table per session (session, worktree, self, children, containers, agents, last progress);
@@ -222,3 +223,72 @@ Each step is validated, tested and committed on its own.
 
 - **Divert actions in v0.1:** copyable steps only, or also use the Desktop app's own "move to cloud" when the session runs there? Proposal: steps only, because a mod can't call the app's tools.
 - **Threshold defaults:** the table above is a guess from one day of measurements. Tune them after a week of history.
+
+### Badge (after step 4)
+
+- **Band** (`AbovePrompt`) draws `$.state` `clearance.badge`, rebuilt each tick and written only when it changes (headroom rounded to 0.1 GB), so the sprite isn't redrawn every sample.
+- **Sprite:** `hooks/sprite.ts` draws 16 × 13 pixel frames procedurally, 12 per mood, and packs them into one SVG; each frame is a `<g>` whose `visibility` a discrete SMIL `<animate>` flips. The desktop draws it with `Svg isInteractive` (SMIL runs only in the sandboxed frame, not in image mode), 32 × 26 CSS px. No timer or blit on our side; about 8 KB per mood.
+- **Terminal:** its element table stands a fragment in for `Svg`, so the band gates on `e.surface` and draws a colored glyph (✓ ■ ·) there. A `Raster` sprite would need 7 rows at half-blocks, too tall for a one-line band.
+- **Sharing the band:** the band is one instance, so the hook calls `next(e)` and stacks another plugin's tree (token-weather's) above its own line; an engine answer (`type: 'engine'`) means nobody else drew. A plugin above clearance that doesn't call `next` still hides it.
+- **Tests:** the kit's `find` doesn't index `Svg` leaves; the test reads `drawn()`.
+- **The band is contested:** token-weather draws `AbovePrompt` without calling `next`, and it sits above clearance in the chain, so the badge never showed there. Plugin order within the `user` tier can't be set by a plugin.
+- **Footer chip** (`SessionMode`, desktop): one traffic-light phrase, then the numbers dim: green `● cleared for 2 sessions` (a session fits), yellow `● cleared for 3 agents` (only subagents fit), red `● on hold`, grey while waiting. The desktop footer draws text only (an `Svg` there showed nothing, so the marshaller stays in the band) and cuts the line at about 22 characters, showing the whole on hover, so the phrase leads and the numbers follow. It keeps the engine's mode labels. Nobody else draws there. Once it has drawn, the status line is left empty so it doesn't repeat it; the terminal keeps the status line.
+- **Two verdicts:** the old `■ HOLD` read as "nothing may start", but the gate asks a session for 0.7 GB and a subagent for 0.3 GB, so subagents can still be cleared while sessions are held. The badge and the footer now show both.
+
+### Live proofs (2026-10-04, desktop session d0ab8903)
+
+- **Spawn gate:** with 0.6 GB of room over the 1.5 GB floor, four general-purpose subagents launched in one message: three were cleared (each reserved 307 MB in presence), the fourth was refused: `clearance: HOLD. Forecast 0.3 GB for general-purpose, machine headroom 0.0 GB (available 1.2 GB, floor 1.5 GB + 0.3 GB ask). 3 subagents in flight machine-wide. Run at most 0 now…`. An earlier single spawn at the same time was cleared: the session HOLD alone does not block subagents (see Two verdicts).
+- **Accuracy:** `scripts/verify.ps1` rereads the machine through performance counters (PDH) and rebuilds each session's tree through `Get-Process .Parent`. Against a 1.6 s old snapshot: available 2178 vs 2107 MB, commit 36770 vs 36821 MB, commit limit equal; per session, the census was within −86…+12 MB of the verified private bytes, no unreadable processes. Differences are drift between the two reads.
+- **What the session table leaves out** (headroom already includes it, since it is machine-wide): the Claude desktop app's own processes (~1.9 GB private), the WSL VM `vmmemWSL` (5.2 GB private; step 6), and orphaned dev-server trees whose launching shell exited (`vite-plus` node, ~2.5 GB). The last is a new finding: a step-6 `unattributed` row should list orphaned node trees under a dead Claude shell.
+- **Not yet proven:** the 0.3 GB subagent forecast. Subagents run inside the session process, so their cost is the session's growth while they run; step 5's history measures that and replaces the constant.
+
+### Step 5: history and forecast
+
+Research (2026-10-04, done inline: clearance held local subagents at the time, so the survey ran in this conversation as its own denial advised):
+
+- **Kubernetes VPA** recommender defaults (`pkg/recommender/config/config.go`): memory target p90, bounds p50 and p95, safety margin 15%, minimum 250 MB, memory aggregated as per-interval peaks (8 intervals), OOM bump ×1.2 or at least 100 MB, a confidence interval of 24 h that widens the bounds while history is short.
+- **Google Autopilot** (EuroSys 2020): memory recommended from peaks, not averages, since memory is stable over short spans and a shortfall is costly; the plain peak for jobs that tolerate no OOMs, p98 for low tolerance, p60 for intermediate; exponentially decayed samples, 48 h half-life; new jobs are sized cautiously.
+
+The model (`hooks/forecast.ts`, pure):
+
+- **Signal, subagents:** a subagent runs inside its session's process, so its cost is the session tree's peak (self + children, from the snapshot row) above its value when the subagent started, split evenly among the subagents that overlapped it (`hooks/history.ts`, the tracker). A run shorter than one sample (5 s) is recorded with `samples: 0` and not used. The main loop's own growth during the run is counted too: the estimate leans high, which is the safe side.
+- **Signal, sessions:** each session's peak self and peak children, one record rewritten as they grow (every 60 s at most).
+- **Estimate:** a time-decayed weighted quantile (half-life 3 days, between VPA's 24 h and Autopilot's 48 h, since a laptop sees far fewer runs a day) plus 15%. Subagents: p90 per `subagentType`; a type with fewer than 3 records uses the pool of every type. Sessions: p90 of the peak self plus the median of the peak children (the MCP servers every session starts; a median ignores the odd dev server).
+- **Cold start:** the learned value is shrunk toward the prior by the effective sample count, `w = nEff / (nEff + 5)`. The priors are 0.3 GB per subagent and the `sessionBaselineGB` option per session. A missing history means the priors, never a block.
+- **Store:** `history/<yyyy-mm>/<sessionId>.jsonl`, one writer per file; every session reads the last two months (records older than 60 days dropped) at start and every 10 minutes. A hot reload reads its own file back, so a record survives it.
+- **Wiring:** the learned subagent forecast replaces the constant in the spawn gate, the reservation, the budget line, the headroom tool (which now says what the forecast is based on), and the footer's verdict. The learned session forecast replaces `sessionBaselineGB` in the gate; the option stays as its prior.
+- **Remote subagents** (`isolation: "remote"`): noted at the Agent `tool.call` (its arguments sit beside `tool`), passed through the spawn gate, and skipped by the tracker, since their cost isn't this machine's.
+
+Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too low (THRASH right after a cleared spawn).
+
+#### Revised the same day: empirical only (owner: "no magic numbers; no assumptions; observe; update")
+
+- **Why:** the first live record (Explore, 49 s, 10 samples) cost 23 MB, but shrinkage toward the 307 MB prior gave a forecast of 260 MB. The prior was an assumption outweighing an observation.
+- **Now:** a forecast is the distribution-free upper confidence bound on the p90 of observed costs (order statistics: the smallest X(k) with P(Binomial(n, 0.9) ≤ k−1) ≥ 0.9). No distribution model, no margin, no decay: fewer observations make a looser bound by construction. A bound needs 22 observations; below that, the largest observed. A subagent type uses its own runs once they support a bound, every type's before.
+- **Before any measured run:** the largest growth any live session's tree showed between two samples (observed each tick), not a constant.
+- **Sessions:** the same bound over recorded session peaks (self + children) plus every live session's size now, so it is observed from the first sample. `sessionBaselineGB` defaults to 0 (learned); a positive value fixes it.
+- **What remains a number is policy, not a size:** the quantile and confidence (0.9 / 0.9), the 60-day retention, the floor (5% of RAM), the commit ceiling and the count ceilings. The floor is next to become empirical: learn the available-memory level where this machine starts paging hard (step 7's pressure counters).
+- **Known ways the census can still understate** (an Explore subagent's audit of `sampler.ps1`, 2026-10-04): orphaned descendants whose parent exited are not reached (`sampler.ps1:126-139`); private bytes miss shared sections, mapped files and kernel pool (`:80`); a failed read counts as 0 (`:80`); a 5 s point sample misses short peaks; registry rows that fail to parse drop out (`:122`, `:125`). Headroom is machine-wide and unaffected; the per-session rows and the subagent costs are.
+
+### Band, final shape (owner's choices, 2026-10-04)
+
+- **token-weather disabled** (user scope) so clearance owns the band; the footer chip and the hint-line chip are gone. The desktop footer draws text only and cut the line at about 22 characters; the hint line isn't drawn on the desktop.
+- **One dense line**, chosen from three mockups: `[marshaller] ● cleared 2s·6a  RAM ▁▂▃▅▆▇ 82%  2.8 GB free` (sessions·agents that fit; a 10-sample RAM sparkline, 50 s). Red reads `● hold 0s·0a … 1.4 GB free, floor 0.8`.
+- **Marshaller by tier:** green waves both paddles, yellow waves one (only subagents fit), red crosses them overhead, grey dozes.
+- **Hover** expands the band upward with the card: RAM and floor, the forecasts and what fits, hold reasons, every session's self/child/agents, and everything else.
+
+### Step 6: Docker, the desktop app, and the convention checks
+
+- **The sampler adopted orphans.** It linked children to parents by pid alone; Windows doesn't reparent orphans, so a reused pid made a session adopt a whole orphaned tree. This session read 8.4 GB of children (the 5.2 GB WSL VM plus a detached 2.1 GB dev server). `Get-Descendants` now counts a child only if it started after its parent (`Process.StartTime`), and history records carry `v: 2`; earlier ones are ignored.
+- **Desktop row:** the Electron tree the desktop sessions run under, less the sessions: 2.5 GB in 38 processes here. (A PowerShell trap on the way: `$root` in a loop is the script's `[string]$Root` parameter, names being case-insensitive, so each pid became a string.)
+- **WSL/Docker VM row:** the `vmmem*` processes, 5.5 GB here.
+- **Containers:** `docker ps` and `docker stats --no-stream` in a thread job every 6th tick (about 3 s, never inside a sample), joined to the snapshot as `containers` (name, compose project, `working_dir` label, host ports, memory). Attribution is in TypeScript (`checks.ts`): the session whose folder holds the `working_dir`, or sits inside it, the longest folder winning. 11 containers here: the 3 `ozu-aps` ones attributed, the 8 Supabase CLI ones unattributed (no label).
+- **Checks** (`/clearance check`, read-only): Supabase `project_id` default or shared; compose projects without the label; hard-coded host ports in compose files (the session folder and one level down); host-port and project-name collisions among running containers.
+- **The snapshot replace** also retries on `UnauthorizedAccessException` (seen once live), not only `IOException`.
+
+### Step 7: THRASH, and the floor learned from paging
+
+- **Signal:** `\Memory\Pages Input/sec` through PDH in the sampler (`machine.pagesInPerSec`). Live: 800–4300 pages/s at 2–3 GB free on this machine.
+- **Histogram** (`pressure.json`, the scribe's to write, once a minute): available memory in bins of 1% of RAM against paging in power-of-two buckets; counts halve past 50,000 samples so old evidence fades.
+- **Floor** (`pressure.ts`): calm is the paging seen at or above the median available level; a bin below it is pressured when its median paging is above the calm p90; the floor is the top edge of the highest pressured bin with at least 22 samples. With no pressured bin yet, the policy floor (5% of RAM) stands. A set `minFreeGB` overrides both. The hover card and the pane say which applies and why.
+- **THRASH:** 3 pressured samples in a row below the floor, or (the original rule) under half the floor with no busy session progressing for 5 minutes (a session waiting for its person is idle, not stalled). It settles with the same 2-sample hysteresis, refuses every local spawn (remote ones pass), turns the band red with a shaking marshaller, and toasts once per episode.
