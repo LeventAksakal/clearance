@@ -1,6 +1,6 @@
 # clearance
 
-> Status: **pre-release**. Build steps 1–2 of 7 work: the shared snapshot, the scribe election, presence, and the gate with its status line and HOLD band; nothing is released yet.
+> Status: **pre-release**. Build steps 1–3 of 7 work: the shared snapshot, the scribe election, presence, the gate with its status line and HOLD band, and admission (spawn gate, subagent budget, headroom tool, session-start dialog); nothing is released yet.
 
 A Claude Code mod that makes every session on a machine aware of the machine's resources and of the other sessions:
 
@@ -23,8 +23,10 @@ Shared state lives in `~/.claude/clearance/` (see [docs/design.md](docs/design.m
 
 - `$.process`: runs `pwsh -File` on the scripts in `scripts/`. `sampler.ps1` reads memory and the process list through Win32 and writes only under `~/.claude/clearance/`; `claim.ps1` creates one epoch file there.
 - `$.fs`: reads `~/.claude/sessions/*.json` (never the `*.key` files) and reads and writes `~/.claude/clearance/`, including this session's presence file.
-- Hooks: `session.start`, `session.end`, `tool.call` (every tool, after `next`, only to note progress; the call is never changed), `ui.render` of `AbovePrompt` (the HOLD band).
-- `$.state` `clearance.band`: what the band draws.
+- Hooks: `session.start`, `session.end`, `tool.call` (every tool, after `next`, only to note progress; the call is never changed), `ui.render` of `AbovePrompt` (the HOLD band), `agent.spawn` (refuses a subagent over the cap, with the forecast), `classic.SubagentStart` (adds the subagent's budget line), `classic.SubagentStop`.
+- `$.tool.register`: `mcp__clearance__headroom`, the census for the model.
+- `$.ui.ask` (the session-start dialog on HOLD), `$.session.append` (a system notice with the divert steps, only when chosen), `$.ui.toast`.
+- `$.state` `clearance.band`, `clearance.startChecked`, `clearance.waitingForClearance`.
 - `$.session.id`, `$.clock`, `$.env.get('USERPROFILE')`, `$.ui.status`, `$.ui.log` (debug log).
 
 Options (`/config`): `minFreeGB` 1.5, `maxCommitPct` 90, `maxSessions` 6, `maxAgents` 8, `sessionBaselineGB` 0.7.

@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03; steps 1–2 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: draft v0.1, 2026-10-03; steps 1–3 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -114,7 +114,7 @@ The inputs are the snapshot, this session's reservations and the options:
 | `session.start` | Resolve own pid (S1), write presence, start the watchdog, register the tool and `/clearance`, gate a new session. On HOLD, an **unawaited** `$.ui.ask` (S5) offers: Divert to cloud / Remote Control / ssh (copyable steps), Wait (toast once cleared), Start anyway. |
 | `agent.spawn` | Gate with the forecast. Over: `{ deny: "clearance: HOLD. Forecast 0.4 GB for general-purpose, headroom 0.2 GB. Run at most 1 now, or divert…" }` (S4). Under: reserve, then `next`. |
 | `classic.SubagentStart` | `additionalContext`: the agent's budget line (S3). |
-| `turn.complete` (agentId) | Release the reservation and write a history record. |
+| `classic.SubagentStop` | The subagent is no longer in flight. Its reservation runs out on its own after 30 s, by when samples count the memory it brought. (History records: step 5.) |
 | `tool.call` (any, after `next`) | Bump `lastProgressAt` in presence, throttled to once per 15 s. |
 | `tool.call` `mcp__clearance__headroom` | The census and forecast table as text (S2). |
 | `command.run` `clearance` | Open the pane. `/clearance check` runs the convention checks. |
@@ -201,6 +201,16 @@ Each step is validated, tested and committed on its own.
 - **Band** (`AbovePrompt`) draws from `$.state` `clearance.band`; while HOLD clears (one sample of CLEARED seen) it stays up and says so. Verified live with `minFreeGB: 64` in a CLI peer: the status line read `clearance ■ HOLD 0.0 GB` and the band listed both reasons (floor, and 6 sessions at a ceiling of 6).
 - **Tests:** the `claude plugin test` engine exposes events only (no `$.state`), so the HOLD drawing is covered live; the cleared case is a mount test on terminal and desktop. A hook may not shadow `next` (validator).
 - **Session ceiling semantics:** the gate asks for one more session, so 6 sessions at a ceiling of 6 is HOLD; the count includes sessions without the mod (from the registry).
+
+### Step 3
+
+- **Spawn gate:** `agent.spawn` gates with the forecast (0.3 GB until step 5's history) and this session's live reservations; over the cap it answers `{ deny }` with the forecast, the headroom, the reasons, how many fit, and the ways out. Under it, the memory is reserved (keyed by `tool_use_id`, renamed to the `agentId` the spawn returns) before `next`. Without a fresh snapshot the spawn is allowed: a missing census must not block work.
+- **In flight** counts this session's subagents as they are now, not as last sampled, so a burst of spawns between samples meets the ceiling.
+- **Budget line** reaches every subagent through `classic.SubagentStart` `additionalContext`.
+- **Headroom tool** `mcp__clearance__headroom` `{ subagentType?, count? }`: census, per-session table, what fits. The tool's arguments arrive at the top level of `tool.call`'s input, beside `tool`.
+- **Session-start dialog:** once per session (a `$.state` flag survives hot reloads), on the first fresh snapshot, gating the snapshot with this session's own row and memory taken off. On HOLD an unawaited `$.ui.ask` offers Divert (a system notice with the steps), Wait (a toast once the shown state is CLEARED) or Start anyway.
+- **Validator:** a function `$` is passed to must be declared at the top of the module (not a closure inside `register`); the hooks share state through a `ctx` object.
+- **Live checks pending:** a spawn denial and the dialog need a logged-in session running this code (the CLI peer used for steps 1–2 is not logged in). Unit tests cover the decisions and texts.
 
 ## Open questions
 
