@@ -4,7 +4,7 @@ import { paneLines, paneModel, shortPath } from './pane.ts'
 import type { SessionSample, Snapshot } from './snapshot.ts'
 
 // A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
-const FIXED = { ...DEFAULTS, minFreeGB: 1.5 }
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5, sessionBaselineGB: 0.7 }
 const row = (sessionId: string, over: Partial<SessionSample> = {}): SessionSample => ({
   sessionId,
   pid: 1,

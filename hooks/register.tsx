@@ -2,9 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
 import type { ClearanceBadge } from '../types'
 import { badgeLine, badgeModel, cardLines, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
-import { AGENT_DEFAULT_MB, DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
-import { forecastAgent, forecastSession, type Forecast } from './forecast.ts'
-import { startHistory, startTracker, type History, type Tracker } from './history.ts'
+import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
+import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
+import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
 import { advance, floorMB, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
@@ -84,8 +84,10 @@ type Ctx = {
   remoteAgents: Set<string>
   history: History | undefined
   tracker: Tracker | undefined
-  /** The session baseline from the options: the prior the learned session forecast shrinks toward. */
-  priorSessionMB: number
+  /** Largest growth step of any live session: the subagent stand-in before any run is measured. */
+  growth: ReturnType<typeof startGrowthWatch>
+  /** The person fixed the session cost in the options; otherwise it is learned. */
+  sessionFixed: boolean
 }
 
 /** Every session's history reread from disk this often, to learn from the others. */
@@ -95,17 +97,15 @@ const SESSION_WRITE_MS = 60_000
 
 /** The learned forecast for one more subagent of `type`, or the prior without history. */
 const agentForecast = (ctx: Ctx, type: string, now: number): Forecast =>
-  ctx.history ? forecastAgent(ctx.history.records(), type, AGENT_DEFAULT_MB, now) : { mb: AGENT_DEFAULT_MB, n: 0, source: 'prior' }
+  forecastAgent(ctx.history?.records() ?? [], type, ctx.growth.maxStepMB(), now)
 
-const basis = (f: Forecast) =>
-  f.source === 'prior'
-    ? 'prior, no history yet'
-    : `learned from ${f.n} ${f.source === 'type' ? 'runs of this type' : 'subagent runs'}, p90+15% ${((f.learnedMB ?? 0) / 1024).toFixed(2)} GB`
+const basis = describe
 
-/** The session baseline the gate uses: learned from every session's peaks, the option as the prior. */
+/** The session cost the gate uses, unless fixed in the options: recorded session peaks and every live session's size now. */
 const relearnSession = (ctx: Ctx, now: number) => {
-  if (!ctx.history) return
-  ctx.opts.sessionBaselineGB = forecastSession(ctx.history.records(), ctx.priorSessionMB, now).mb / 1024
+  if (ctx.sessionFixed) return
+  const live = (ctx.latest?.sessions ?? []).map(r => r.selfMB + r.childMB)
+  ctx.opts.sessionBaselineGB = forecastSession(ctx.history?.records() ?? [], live, now).mb / 1024
 }
 
 
@@ -190,7 +190,8 @@ export const register: Register = (on, options) => {
     remoteAgents: new Set(),
     history: undefined,
     tracker: undefined,
-    priorSessionMB: opts.sessionBaselineGB * 1024,
+    growth: startGrowthWatch(),
+    sessionFixed: opts.sessionBaselineGB > 0,
   }
   let sessionWrittenAt = 0
   let historyLoadedAt = 0
@@ -268,6 +269,10 @@ export const register: Register = (on, options) => {
         $.ui.status(ctx.footerDrawn ? undefined : statusLine(snapshot, now, view?.shown))
         const own = fresh?.sessions.find(r => r.sessionId === ctx.sessionId)
         if (fresh && own) ctx.tracker?.sample(own, fresh.t)
+        if (fresh) {
+          ctx.growth.observe(fresh.sessions, fresh.t)
+          relearnSession(ctx, now)
+        }
         void keepHistory(now).catch(err => sessionIo.log(`history: ${String(err)}`))
         const agent = fresh
           ? gate(fresh, opts, { kind: 'agent', mb: agentForecast(ctx, 'general-purpose', now).mb }, presence.reservedSince(fresh.t, now))

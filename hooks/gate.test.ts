@@ -3,7 +3,7 @@ import { DEFAULTS, advance, census, floorMB, gate, gateOptions, settle } from '.
 import type { SessionSample, Snapshot } from './snapshot.ts'
 
 // A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
-const FIXED = { ...DEFAULTS, minFreeGB: 1.5 }
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5, sessionBaselineGB: 0.7 }
 const row = (over: Partial<SessionSample> = {}): SessionSample => ({
   sessionId: 's',
   pid: 1,
@@ -77,11 +77,12 @@ describe('auto floor', () => {
     expect(gateOptions({ minFreeGB: -1 }).minFreeGB).toBe(0)
   })
 
-  test('the case that held all day: 1.4 GB free on 15.4 GB now clears one session and two subagents', () => {
+  test('the case that held all day: 1.4 GB free on 15.4 GB now clears two subagents, not a 0.7 GB session', () => {
     const s = snap(1434, [row(), row()], { machine: { totalMB: 15_724, availableMB: 1434, commitMB: 33_800, commitLimitMB: 47_400 } })
-    expect(gate(s, DEFAULTS, { kind: 'agent', mb: 307 }).fits).toBe(2)
-    expect(gate(s, DEFAULTS, { kind: 'session' }).state).toBe('HOLD')
-    expect(gate(s, DEFAULTS, { kind: 'session' }).reasons[0]).toBe('available 1.4 GB, floor 0.8 GB + 0.7 GB ask')
+    const o = { ...DEFAULTS, sessionBaselineGB: 0.7 }
+    expect(gate(s, o, { kind: 'agent', mb: 307 }).fits).toBe(2)
+    expect(gate(s, o, { kind: 'session' }).state).toBe('HOLD')
+    expect(gate(s, o, { kind: 'session' }).reasons[0]).toBe('available 1.4 GB, floor 0.8 GB + 0.7 GB ask')
   })
 })
 
@@ -89,7 +90,7 @@ describe('gateOptions', () => {
   test('fills defaults for missing or nonsensical values', () => {
     expect(gateOptions({})).toEqual(DEFAULTS)
     expect(gateOptions({ minFreeGB: 2, maxSessions: 4.7, maxCommitPct: 140, maxAgents: -1 })).toEqual({
-      ...FIXED,
+      ...DEFAULTS,
       minFreeGB: 2,
       maxSessions: 4,
       maxCommitPct: 100,

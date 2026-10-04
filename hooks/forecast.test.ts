@@ -1,11 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { MODEL, forecastAgent, forecastSession, parseHistory, weightedQuantile, type AgentRecord, type SessionRecord } from './forecast.ts'
+import { POLICY, forecastAgent, forecastSession, needed, parseHistory, quantileUpperBound, type AgentRecord, type SessionRecord } from './forecast.ts'
 import { historyFile, historyText, startHistory, startTracker } from './history.ts'
 import type { Io } from './io.ts'
 import { pathsFor } from './paths.ts'
 
 const NOW = 1_800_000_000_000
-const DAY = 24 * 3600_000
 
 const agent = (costMB: number, over: Partial<AgentRecord> = {}): AgentRecord => ({
   kind: 'agent',
@@ -29,58 +28,57 @@ const session = (peakSelfMB: number, peakChildMB: number, over: Partial<SessionR
   ...over,
 })
 
-describe('weighted quantile', () => {
-  test('equal weights: the p90 of 1..10 is 9', () => {
-    expect(weightedQuantile([...Array(10)].map((_, i) => ({ v: i + 1, w: 1 })), 0.9)).toBe(9)
-  })
-  test('weight moves it: an old large sample counts less', () => {
-    const pts = [{ v: 100, w: 1 }, { v: 100, w: 1 }, { v: 1000, w: 0.05 }]
-    expect(weightedQuantile(pts, 0.9)).toBe(100)
+describe('quantile bound', () => {
+  test('needs 22 observations for a p90 bound at 90% confidence', () => {
+    expect(needed()).toBe(22)
+    expect(quantileUpperBound([...Array(21)].map((_, i) => i))).toBeUndefined()
+    // with 22, the bound is the largest; with more, it moves inside the sample
+    expect(quantileUpperBound([...Array(22)].map((_, i) => i + 1))).toBe(22)
+    const hundred = [...Array(100)].map((_, i) => i + 1)
+    const b = quantileUpperBound(hundred)!
+    expect(b).toBeGreaterThan(90)
+    expect(b).toBeLessThan(100)
   })
 })
 
 describe('subagent forecast', () => {
-  test('the prior without history', () => {
-    expect(forecastAgent([], 'Explore', 307, NOW)).toEqual({ mb: 307, n: 0, source: 'prior' })
+  test('nothing measured: the observed stand-in, never a constant', () => {
+    expect(forecastAgent([], 'Explore', 140, NOW)).toEqual({ mb: 140, n: 0, method: 'standIn', scope: 'pool' })
   })
 
-  test('few samples are shrunk toward the prior; many reach p90 + 15%', () => {
-    const one = forecastAgent([agent(1000)], 'general-purpose', 307, NOW)
-    // one sample weighs 1/(1+5) against the prior
-    expect(one.mb).toBe(Math.round((1 / 6) * 1150 + (5 / 6) * 307))
-    const many = forecastAgent([...Array(200)].map((_, i) => agent(i < 180 ? 400 : 900)), 'general-purpose', 307, NOW)
-    expect(many.learnedMB).toBe(460)
-    expect(many.mb).toBeGreaterThan(450)
-    expect(many.source).toBe('type')
+  test('the run measured live today: 23 MB is the forecast, not a prior', () => {
+    expect(forecastAgent([agent(23, { type: 'Explore' })], 'Explore', 140, NOW)).toMatchObject({ mb: 23, n: 1, method: 'max' })
   })
 
-  test('a type with few runs borrows the pool; with enough it stands alone', () => {
-    const pool = [...Array(10)].map(() => agent(800))
-    const two = [agent(100, { type: 'Explore' }), agent(100, { type: 'Explore' })]
-    expect(forecastAgent([...pool, ...two], 'Explore', 307, NOW).source).toBe('pool')
-    const three = [...two, agent(100, { type: 'Explore' })]
-    const f = forecastAgent([...pool, ...three], 'Explore', 307, NOW)
-    expect(f.source).toBe('type')
-    expect(f.learnedMB).toBe(115)
+  test('too few for a bound: the largest; enough: the bound', () => {
+    expect(forecastAgent([agent(100), agent(400), agent(250)], 'general-purpose', 1, NOW)).toMatchObject({ mb: 400, method: 'max' })
+    const runs = [...Array(200)].map((_, i) => agent(i < 180 ? 400 : 900))
+    const f = forecastAgent(runs, 'general-purpose', 1, NOW)
+    expect(f).toMatchObject({ method: 'bound', scope: 'type' })
+    expect(f.mb).toBe(900)
   })
 
-  test('old runs fade (3-day half-life) and runs too short to measure are ignored', () => {
-    const old = [...Array(20)].map(() => agent(2000, { t: NOW - 30 * DAY }))
-    const recent = [...Array(20)].map(() => agent(300))
-    expect(forecastAgent([...old, ...recent], 'general-purpose', 307, NOW).learnedMB).toBe(345)
-    expect(forecastAgent([agent(5000, { samples: 0 })], 'general-purpose', 307, NOW).source).toBe('prior')
-    expect(forecastAgent([agent(5000, { t: NOW - MODEL.maxAgeMs - 1 })], 'general-purpose', 307, NOW).source).toBe('prior')
+  test("a type's own runs once they support a bound; the pool before", () => {
+    const pool = [...Array(30)].map(() => agent(800))
+    const explore = (n: number) => [...Array(n)].map(() => agent(50, { type: 'Explore' }))
+    expect(forecastAgent([...pool, ...explore(5)], 'Explore', 1, NOW)).toMatchObject({ scope: 'pool', mb: 800 })
+    expect(forecastAgent([...pool, ...explore(22)], 'Explore', 1, NOW)).toMatchObject({ scope: 'type', mb: 50 })
+  })
+
+  test('runs too short to measure, or too old, are left out', () => {
+    expect(forecastAgent([agent(5000, { samples: 0 })], 'general-purpose', 7, NOW).method).toBe('standIn')
+    expect(forecastAgent([agent(5000, { t: NOW - POLICY.maxAgeMs - 1 })], 'general-purpose', 7, NOW).method).toBe('standIn')
   })
 })
 
 describe('session forecast', () => {
-  test('p90 of own peak plus the median of the children, shrunk toward the option', () => {
-    expect(forecastSession([], 716.8, NOW)).toEqual({ mb: 716.8, n: 0, source: 'prior' })
-    const many = [...Array(100)].map((_, i) => session(700, i % 10 === 0 ? 2600 : 300))
-    const f = forecastSession(many, 716.8, NOW)
-    // self 700 × 1.15 = 805, children median 300 × 1.15 = 345 (the 2.6 GB dev servers don't move a median)
-    expect(f.learnedMB).toBe(805 + 345)
-    expect(f.mb).toBeGreaterThan(1100)
+  test('recorded peaks and the live sessions, observed from the first sample', () => {
+    expect(forecastSession([], [700, 1300, 900], NOW)).toMatchObject({ mb: 1300, n: 3, method: 'max' })
+    const many = [...Array(40)].map((_, i) => session(700, i % 10 === 0 ? 2600 : 300))
+    const f = forecastSession(many, [], NOW)
+    expect(f.method).toBe('bound')
+    // a tenth of sessions run a 2.6 GB dev server: the p90 bound covers them
+    expect(f.mb).toBe(3300)
   })
 })
 

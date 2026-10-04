@@ -1,6 +1,6 @@
 {
   "name": "clearance",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Machine-wide resource clearance for Claude Code sessions and subagents: see the headroom, and get cleared, held or diverted before launching more.",
   "author": { "name": "wombraider" },
   "license": "MIT",
@@ -33,8 +33,8 @@
     "sessionBaselineGB": {
       "type": "number",
       "title": "New session cost (GB)",
-      "description": "What a new session is assumed to cost until history learns it.",
-      "default": 0.7
+      "description": "0 means learned: an upper bound on what this machine's sessions were seen to grow to. A positive value fixes it.",
+      "default": 0
     }
   }
 }

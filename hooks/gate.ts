@@ -10,10 +10,11 @@ export type GateOptions = {
   maxCommitPct: number
   maxSessions: number
   maxAgents: number
+  /** What a new session costs; 0 in the options means learned (register.tsx fills it from history and the live sessions). */
   sessionBaselineGB: number
 }
 
-export const DEFAULTS: GateOptions = { minFreeGB: 0, maxCommitPct: 90, maxSessions: 6, maxAgents: 8, sessionBaselineGB: 0.7 }
+export const DEFAULTS: GateOptions = { minFreeGB: 0, maxCommitPct: 90, maxSessions: 6, maxAgents: 8, sessionBaselineGB: 0 }
 
 /**
  * The auto floor, as a share of total RAM (decided 2026-10-04): a fixed 1.5 GB
@@ -37,7 +38,7 @@ export const gateOptions = (raw: Readonly<Record<string, unknown>>): GateOptions
     maxCommitPct: Math.min(100, pick('maxCommitPct')),
     maxSessions: Math.floor(pick('maxSessions')),
     maxAgents: Math.floor(pick('maxAgents')),
-    sessionBaselineGB: pick('sessionBaselineGB'),
+    sessionBaselineGB: typeof raw.sessionBaselineGB === 'number' && raw.sessionBaselineGB > 0 ? raw.sessionBaselineGB : 0,
   }
 }
 

@@ -1,11 +1,14 @@
-// Step 5: forecasts learned from history (design.md § Step 5). Pure: no `$` here.
+// Step 5: forecasts from what this machine was seen to use (design.md § Step 5).
+// Pure: no `$` here.
 //
-// The model follows the production recommenders for memory: size from peaks,
-// not averages (a shortfall costs a stalled machine, not a slower one), take a
-// high quantile of time-decayed samples and add a margin. Kubernetes VPA's
-// defaults: p90 target, 15% margin. Google Autopilot: peaks or p98 for low
-// tolerance, 48 h half-life. With few samples the learned value is shrunk
-// toward the prior, so one odd run can't swing admission.
+// No assumed sizes. A forecast is an upper confidence bound on a high quantile
+// of observed costs, distribution-free (order statistics), so it needs no model
+// of the distribution and no safety margin: fewer observations give a looser,
+// higher bound by construction. With too few for a bound, the largest observed;
+// with none, a stand-in the caller observed (never a constant).
+//
+// The two numbers below are policy, not sizes: how high a quantile to cover and
+// how sure to be of covering it.
 
 /** A finished subagent: how much its session's process tree grew while it ran. */
 export type AgentRecord = {
@@ -24,93 +27,88 @@ export type AgentRecord = {
   costMB: number
 }
 
-/** A session's peaks: what a new session grows to. One per session, rewritten as it grows. */
+/** A session's peaks: what a session grows to. One per session, rewritten as it grows. */
 export type SessionRecord = { kind: 'session'; t: number; sessionId: string; peakSelfMB: number; peakChildMB: number; samples: number }
 
 export type HistoryRecord = AgentRecord | SessionRecord
 
-export const MODEL = {
+export const POLICY = {
+  /** Cover this share of runs... */
   quantile: 0.9,
-  margin: 0.15,
-  halfLifeMs: 3 * 24 * 3600_000,
-  /** Effective samples at which the learned value and the prior weigh the same. */
-  shrinkK: 5,
-  /** Below this many records of a type, that type borrows the pool of every type. */
-  minTypeSamples: 3,
-  floorMB: 64,
-  /** Records older than this are dropped when loading. */
+  /** ...with this confidence. */
+  confidence: 0.9,
+  /** Records older than this are dropped when loading: a machine and its tools change. */
   maxAgeMs: 60 * 24 * 3600_000,
 } as const
 
 export type Forecast = {
   mb: number
-  /** Records it learned from. */
+  /** Observations it rests on. */
   n: number
-  /** `prior` with no usable records; `type` from this type's own; `pool` from every type's. */
-  source: 'prior' | 'type' | 'pool'
-  /** The learned value before shrinkage, when there was one. */
-  learnedMB?: number
+  /**
+   * `bound`: the quantile's upper confidence bound; `max`: too few for a bound,
+   * the largest seen; `standIn`: nothing recorded, the caller's observed stand-in.
+   */
+  method: 'bound' | 'max' | 'standIn'
+  /** For subagents: whether the records are this type's own or every type's. */
+  scope?: 'type' | 'pool'
 }
 
-const decay = (age: number) => Math.pow(0.5, Math.max(0, age) / MODEL.halfLifeMs)
-
-/** The weighted `q` quantile: the smallest value whose cumulative weight reaches `q` of the total. */
-export const weightedQuantile = (points: readonly { v: number; w: number }[], q: number): number => {
-  const sorted = [...points].filter(p => p.w > 0).sort((a, b) => a.v - b.v)
-  const total = sorted.reduce((s, p) => s + p.w, 0)
-  if (total === 0) return NaN
-  let acc = 0
-  for (const p of sorted) {
-    acc += p.w
-    if (acc >= q * total - 1e-9) return p.v
+/** P(X ≤ k) for X ~ Binomial(n, p). */
+const binomCdf = (k: number, n: number, p: number) => {
+  let term = Math.pow(1 - p, n)
+  let sum = term
+  for (let i = 1; i <= k; i++) {
+    term *= ((n - i + 1) / i) * (p / (1 - p))
+    sum += term
   }
-  return sorted[sorted.length - 1]!.v
-}
-
-/** Quantile plus margin of decayed samples, shrunk toward `priorMB` by how much evidence there is. */
-const learn = (values: readonly { v: number; t: number }[], priorMB: number, now: number, q: number = MODEL.quantile) => {
-  const points = values.map(x => ({ v: x.v, w: decay(now - x.t) }))
-  const nEff = points.reduce((s, p) => s + p.w, 0)
-  const learnedMB = weightedQuantile(points, q) * (1 + MODEL.margin)
-  const w = nEff / (nEff + MODEL.shrinkK)
-  return { mb: Math.max(MODEL.floorMB, Math.round(w * learnedMB + (1 - w) * priorMB)), learnedMB: Math.round(learnedMB) }
-}
-
-const usable = (r: HistoryRecord, now: number) => now - r.t <= MODEL.maxAgeMs && (r.kind === 'session' || r.samples > 0)
-
-/** One more subagent of `type`: its own records, or every type's while it has few. */
-export const forecastAgent = (records: readonly HistoryRecord[], type: string, priorMB: number, now: number): Forecast => {
-  const agents = records.filter((r): r is AgentRecord => r.kind === 'agent' && usable(r, now))
-  const own = agents.filter(r => r.type === type)
-  const [pick, source] = own.length >= MODEL.minTypeSamples ? [own, 'type' as const] : [agents, 'pool' as const]
-  if (pick.length === 0) return { mb: priorMB, n: 0, source: 'prior' }
-  const { mb, learnedMB } = learn(
-    pick.map(r => ({ v: r.costMB, t: r.t })),
-    priorMB,
-    now,
-  )
-  return { mb, n: pick.length, source, learnedMB }
+  return sum
 }
 
 /**
- * One more session: the p90 of a session's own peak plus the median of its
- * children's peak (the MCP servers every session starts, not the odd dev server).
+ * The distribution-free upper confidence bound on the `q` quantile: the
+ * smallest order statistic X(k) with P(X(k) ≥ x_q) ≥ `c`, that is
+ * P(Binomial(n, q) ≤ k − 1) ≥ c. Undefined when n is too small for any k
+ * (n < ln(1 − c) / ln(q), 22 at 0.9 / 0.9).
  */
-export const forecastSession = (records: readonly HistoryRecord[], priorMB: number, now: number): Forecast => {
-  const sessions = records.filter((r): r is SessionRecord => r.kind === 'session' && usable(r, now) && r.samples > 0)
-  if (sessions.length === 0) return { mb: priorMB, n: 0, source: 'prior' }
-  const self = learn(
-    sessions.map(r => ({ v: r.peakSelfMB, t: r.t })),
-    priorMB * 0.6,
-    now,
-  )
-  const child = learn(
-    sessions.map(r => ({ v: r.peakChildMB, t: r.t })),
-    priorMB * 0.4,
-    now,
-    0.5,
-  )
-  return { mb: self.mb + child.mb, n: sessions.length, source: 'type', learnedMB: self.learnedMB + child.learnedMB }
+export const quantileUpperBound = (values: readonly number[], q: number = POLICY.quantile, c: number = POLICY.confidence): number | undefined => {
+  const x = [...values].sort((a, b) => a - b)
+  for (let k = 1; k <= x.length; k++) if (binomCdf(k - 1, x.length, q) >= c) return x[k - 1]
+  return undefined
+}
+
+/** How many observations a bound needs under the policy. */
+export const needed = (q: number = POLICY.quantile, c: number = POLICY.confidence) => Math.ceil(Math.log(1 - c) / Math.log(q))
+
+const usable = (r: HistoryRecord, now: number) => now - r.t <= POLICY.maxAgeMs && r.samples > 0
+
+const estimate = (values: readonly number[], standInMB: number): Omit<Forecast, 'scope'> => {
+  const bound = quantileUpperBound(values)
+  if (bound !== undefined) return { mb: Math.max(1, Math.round(bound)), n: values.length, method: 'bound' }
+  if (values.length > 0) return { mb: Math.max(1, Math.round(Math.max(...values))), n: values.length, method: 'max' }
+  return { mb: Math.max(1, Math.round(standInMB)), n: 0, method: 'standIn' }
+}
+
+/**
+ * One more subagent of `type`: its own runs once they support a bound, else
+ * every type's runs. `standInMB` is used only before any run was measured.
+ */
+export const forecastAgent = (records: readonly HistoryRecord[], type: string, standInMB: number, now: number): Forecast => {
+  const agents = records.filter((r): r is AgentRecord => r.kind === 'agent' && usable(r, now))
+  const own = agents.filter(r => r.type === type).map(r => r.costMB)
+  if (quantileUpperBound(own) !== undefined) return { ...estimate(own, standInMB), scope: 'type' }
+  return { ...estimate(agents.map(r => r.costMB), standInMB), scope: 'pool' }
+}
+
+/**
+ * One more session: recorded session peaks (self + children) and every live
+ * session's size now, which is a lower bound of its own peak and is observed
+ * from the first sample.
+ */
+export const forecastSession = (records: readonly HistoryRecord[], liveMB: readonly number[], now: number): Forecast => {
+  const recorded = records.filter((r): r is SessionRecord => r.kind === 'session' && usable(r, now)).map(r => r.peakSelfMB + r.peakChildMB)
+  const values = [...recorded, ...liveMB]
+  return estimate(values, values.length ? Math.max(...values) : 0)
 }
 
 /** Reads a JSONL history file; a line that doesn't parse as a record is skipped. */
@@ -122,10 +120,18 @@ export const parseHistory = (text: string): HistoryRecord[] => {
       const r = JSON.parse(line) as Partial<HistoryRecord>
       const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x)
       if (r.kind === 'agent' && num(r.t) && typeof r.type === 'string' && num(r.costMB) && num(r.samples)) out.push(r as AgentRecord)
-      else if (r.kind === 'session' && num(r.t) && num(r.peakSelfMB) && num(r.peakChildMB)) out.push(r as SessionRecord)
+      else if (r.kind === 'session' && num(r.t) && num(r.peakSelfMB) && num(r.peakChildMB) && num(r.samples)) out.push(r as SessionRecord)
     } catch {
       // a torn line from a crash mid-write
     }
   }
   return out
 }
+
+/** Says what a forecast rests on, for the headroom tool and the hover card. */
+export const describe = (f: Forecast) =>
+  f.method === 'bound'
+    ? `p${POLICY.quantile * 100} bound at ${POLICY.confidence * 100}% confidence over ${f.n} ${f.scope === 'type' ? 'runs of this type' : 'runs'}`
+    : f.method === 'max'
+      ? `largest of ${f.n} observed (a bound needs ${needed()})`
+      : 'nothing measured yet: the largest growth step seen in a live session'

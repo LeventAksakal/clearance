@@ -29,7 +29,7 @@ Shared state lives in `~/.claude/clearance/` (see [docs/design.md](docs/design.m
 - `$.state` `clearance.badge`, `clearance.pane`, `clearance.startChecked`, `clearance.waitingForClearance`.
 - `$.session.id`, `$.clock`, `$.env.get('USERPROFILE')`, `$.ui.status`, `$.ui.log` (debug log).
 
-Options (`/config`): `minFreeGB` 0 (auto: 5% of RAM), `maxCommitPct` 90, `maxSessions` 6, `maxAgents` 8, `sessionBaselineGB` 0.7.
+Options (`/config`): `minFreeGB` 0 (auto: 5% of RAM), `maxCommitPct` 90, `maxSessions` 6, `maxAgents` 8, `sessionBaselineGB` 0 (learned).
 - No `$.http`.
 
 ## License

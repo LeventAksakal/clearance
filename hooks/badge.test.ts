@@ -5,7 +5,7 @@ import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
 
 // A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
-const FIXED = { ...DEFAULTS, minFreeGB: 1.5 }
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5, sessionBaselineGB: 0.7 }
 const snap = (availableMB: number, sessions = 2): Snapshot => ({
   schema: 1,
   epoch: 1,

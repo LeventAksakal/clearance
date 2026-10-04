@@ -1,4 +1,4 @@
-import { MODEL, parseHistory, type AgentRecord, type HistoryRecord, type SessionRecord } from './forecast.ts'
+import { POLICY, parseHistory, type AgentRecord, type HistoryRecord, type SessionRecord } from './forecast.ts'
 import type { Io } from './io.ts'
 import type { Paths } from './paths.ts'
 
@@ -70,6 +70,29 @@ export const startTracker = () => {
 
 export type Tracker = ReturnType<typeof startTracker>
 
+/**
+ * The largest growth any live session's tree showed between two samples: the
+ * subagent stand-in before any run was measured, observed rather than assumed.
+ */
+export const startGrowthWatch = () => {
+  const prev = new Map<string, number>()
+  let lastT = -1
+  let maxStepMB = 0
+  return {
+    observe(sessions: readonly { sessionId: string; selfMB: number; childMB: number }[], t: number) {
+      if (t === lastT) return
+      lastT = t
+      for (const r of sessions) {
+        const mb = r.selfMB + r.childMB
+        const before = prev.get(r.sessionId)
+        if (before !== undefined) maxStepMB = Math.max(maxStepMB, mb - before)
+        prev.set(r.sessionId, mb)
+      }
+    },
+    maxStepMB: () => maxStepMB,
+  }
+}
+
 const month = (ms: number) => new Date(ms).toISOString().slice(0, 7)
 
 export const historyFile = (paths: Paths, sessionId: string, startedAt: number) => `${paths.history}\\${month(startedAt)}\\${sessionId}.jsonl`
@@ -117,7 +140,7 @@ export const startHistory = async (io: Io, paths: Paths, sessionId: string, star
         if (!f.name.endsWith('.jsonl')) continue
         const path = `${dir}\\${f.name}`
         try {
-          const records = parseHistory(await io.read(path)).filter(r => now - r.t <= MODEL.maxAgeMs)
+          const records = parseHistory(await io.read(path)).filter(r => now - r.t <= POLICY.maxAgeMs)
           if (path === own) ownRecords = records
           else all.push(...records)
         } catch {

@@ -259,3 +259,12 @@ The model (`hooks/forecast.ts`, pure):
 - **Remote subagents** (`isolation: "remote"`): noted at the Agent `tool.call` (its arguments sit beside `tool`), passed through the spawn gate, and skipped by the tracker, since their cost isn't this machine's.
 
 Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too low (THRASH right after a cleared spawn).
+
+#### Revised the same day: empirical only (owner: "no magic numbers; no assumptions; observe; update")
+
+- **Why:** the first live record (Explore, 49 s, 10 samples) cost 23 MB, but shrinkage toward the 307 MB prior gave a forecast of 260 MB. The prior was an assumption outweighing an observation.
+- **Now:** a forecast is the distribution-free upper confidence bound on the p90 of observed costs (order statistics: the smallest X(k) with P(Binomial(n, 0.9) ≤ k−1) ≥ 0.9). No distribution model, no margin, no decay: fewer observations make a looser bound by construction. A bound needs 22 observations; below that, the largest observed. A subagent type uses its own runs once they support a bound, every type's before.
+- **Before any measured run:** the largest growth any live session's tree showed between two samples (observed each tick), not a constant.
+- **Sessions:** the same bound over recorded session peaks (self + children) plus every live session's size now, so it is observed from the first sample. `sessionBaselineGB` defaults to 0 (learned); a positive value fixes it.
+- **What remains a number is policy, not a size:** the quantile and confidence (0.9 / 0.9), the 60-day retention, the floor (5% of RAM), the commit ceiling and the count ceilings. The floor is next to become empirical: learn the available-memory level where this machine starts paging hard (step 7's pressure counters).
+- **Known ways the census can still understate** (an Explore subagent's audit of `sampler.ps1`, 2026-10-04): orphaned descendants whose parent exited are not reached (`sampler.ps1:126-139`); private bytes miss shared sections, mapped files and kernel pool (`:80`); a failed read counts as 0 (`:80`); a 5 s point sample misses short peaks; registry rows that fail to parse drop out (`:122`, `:125`). Headroom is machine-wide and unaffected; the per-session rows and the subagent costs are.
