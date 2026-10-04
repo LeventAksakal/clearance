@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { DIALOG, budgetLine, decideSpawn, divertSteps, forecastMB, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { advance, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
+import { paneLines, paneModel, type Tone } from './pane.ts'
 import { pathsFor } from './paths.ts'
 import { startPresence, type Presence } from './presence.ts'
 import { startScribe, type Scribe } from './scribe.ts'
@@ -11,13 +12,24 @@ import { isFresh, statusLine, type Snapshot } from './snapshot.ts'
 // Wiring only: hooks to modules. Step 1: the scribe election and the sampler.
 // Step 2: presence, the gate, the status line's states and the HOLD band.
 // Step 3: admission: the spawn gate, each subagent's budget line, the
-// headroom tool and the session-start dialog.
+// headroom tool and the session-start dialog. Step 4: the /clearance pane.
 
 const band = atom({ plugin: 'clearance', key: 'band' } as const, null)
+const pane = atom({ plugin: 'clearance', key: 'pane' } as const, null)
 const startChecked = atom({ plugin: 'clearance', key: 'startChecked' } as const, false)
 const waitingForClearance = atom({ plugin: 'clearance', key: 'waitingForClearance' } as const, false)
 
 const HEADROOM_TOOL = 'mcp__clearance__headroom'
+const PANE = 'clearance'
+const PANE_TITLE = 'clearance'
+
+const TONE: Record<Tone, { color?: string; dimColor?: boolean; bold?: boolean }> = {
+  plain: {},
+  dim: { dimColor: true },
+  ok: { color: 'green', bold: true },
+  warn: { color: 'yellow', bold: true },
+  head: { bold: true },
+}
 
 // The modules' reach. `$` stays in this file: the validator follows it only
 // within one file, so the other modules get these closures instead.
@@ -54,6 +66,8 @@ type Ctx = {
   io: Io | undefined
   /** The latest snapshot read, if it was fresh then. */
   latest: Snapshot | undefined
+  /** This session's id as of the last session.start (the pane marks its row). */
+  sessionId: string
 }
 
 /** The latest snapshot if still fresh, with this session's subagents counted as they are now. */
@@ -88,7 +102,7 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
 
 export const register: Register = (on, options) => {
   const opts = gateOptions(options)
-  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined }
+  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '' }
   let scribe: Scribe | undefined
   let view: GateView | undefined
   let shownBand = 'null'
@@ -104,9 +118,11 @@ export const register: Register = (on, options) => {
     const paths = pathsFor(home)
     const sessionIo = ioFor($, `${paths.root}\\logs\\${await $.session.id()}.log`)
     const presence = startPresence(sessionIo, paths)
+    ctx.sessionId = await $.session.id()
     ctx.io = sessionIo
     ctx.presence = presence
     await presence.flush()
+    await $.command.register({ name: 'clearance', description: "Show this machine's sessions, their memory and the headroom in a pane" })
     await $.tool.register({
       name: 'headroom',
       description:
@@ -123,10 +139,12 @@ export const register: Register = (on, options) => {
     scribe = startScribe(sessionIo, {
       paths,
       scripts: `${$.plugin.root}\\scripts`,
-      onTick: (snapshot, _isScribe, now) => {
+      onTick: (snapshot, isScribe, now) => {
         const fresh = snapshot && isFresh(snapshot, now) ? snapshot : undefined
         ctx.latest = fresh
         view = fresh ? advance(view, fresh, opts, presence.reservedSince(fresh.t, now)) : undefined
+        const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now) : null
+        void update($, pane, () => model)
         $.ui.status(statusLine(snapshot, now, view?.shown))
         const held = view?.band ?? null
         const key = JSON.stringify(held)
@@ -196,6 +214,25 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     ctx.presence?.progress()
     return result
+  })
+
+  on('command.run', { command: 'clearance' }, async $ => {
+    await $.ui.open({ id: PANE, title: PANE_TITLE })
+    return { text: 'clearance pane opened.' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const lines = paneLines(await read($, pane), e.props.bodyColumns, await $.clock.now())
+    return (
+      <Box flexDirection="column">
+        {lines.map((line, i) => (
+          <Text key={`l${i}`} wrap="truncate-end" {...TONE[line.tone]}>
+            {line.text || ' '}
+          </Text>
+        ))}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

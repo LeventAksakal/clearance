@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03; steps 1–3 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: draft v0.1, 2026-10-03; steps 1–4 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -211,6 +211,12 @@ Each step is validated, tested and committed on its own.
 - **Session-start dialog:** once per session (a `$.state` flag survives hot reloads), on the first fresh snapshot, gating the snapshot with this session's own row and memory taken off. On HOLD an unawaited `$.ui.ask` offers Divert (a system notice with the steps), Wait (a toast once the shown state is CLEARED) or Start anyway.
 - **Validator:** a function `$` is passed to must be declared at the top of the module (not a closure inside `register`); the hooks share state through a `ctx` object.
 - **Live checks pending:** a spawn denial and the dialog need a logged-in session running this code (the CLI peer used for steps 1–2 is not logged in). Unit tests cover the decisions and texts.
+
+### Step 4
+
+- **Pane `/clearance`:** `$.command.register` plus a `command.run` hook opens it; the `Pane` render hook lays out `$.state` `clearance.pane` (rebuilt every sample by the pure `paneModel`) to `bodyColumns`: the state and reasons, a machine line, a counts line (sessions, subagents, reserved, sample age, epoch, scribe), then one row per session sorted by memory (session, folder, self, children, subagents, last progress, largest child). Desktop-app and Docker rows, unattributed containers and the checks join in step 6.
+- **Tests:** beneath the plugin, a test answers a `$` call's event with `{ value }` (`on('ui.open', () => ({ value: { isPlaced: true } }))`, likewise `clock.now`); the pane mount test runs on terminal and desktop.
+- **Live check pending:** opening the pane needs a typed `/clearance` in a session on this code.
 
 ## Open questions
 
