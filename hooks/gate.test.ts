@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { DEFAULTS, advance, census, gate, gateOptions, settle } from './gate.ts'
+import { DEFAULTS, advance, census, floorMB, gate, gateOptions, settle } from './gate.ts'
 import type { SessionSample, Snapshot } from './snapshot.ts'
 
+// A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5 }
 const row = (over: Partial<SessionSample> = {}): SessionSample => ({
   sessionId: 's',
   pid: 1,
@@ -29,11 +31,11 @@ const snap = (availableMB: number, sessions: SessionSample[] = [row(), row()], o
 describe('gate', () => {
   test('clears a session when RAM above the floor covers the baseline', () => {
     // 4096 - 1536 floor = 2560 headroom; a 717 MB baseline fits 3 times.
-    expect(gate(snap(4096), DEFAULTS, { kind: 'session' })).toEqual({ state: 'CLEARED', headroomMB: 2560, fits: 3, reasons: [] })
+    expect(gate(snap(4096), FIXED, { kind: 'session' })).toEqual({ state: 'CLEARED', headroomMB: 2560, fits: 3, reasons: [] })
   })
 
   test('holds a session when the floor would be crossed', () => {
-    const v = gate(snap(2000), DEFAULTS, { kind: 'session' })
+    const v = gate(snap(2000), FIXED, { kind: 'session' })
     expect(v.state).toBe('HOLD')
     expect(v.headroomMB).toBe(464)
     expect(v.fits).toBe(0)
@@ -42,28 +44,44 @@ describe('gate', () => {
 
   test('holds on the commit ceiling even with RAM to spare', () => {
     const s = snap(8000, [row()], { machine: { totalMB: 16384, availableMB: 8000, commitMB: 44_000, commitLimitMB: 49_152 } })
-    const v = gate(s, DEFAULTS, { kind: 'session' })
+    const v = gate(s, FIXED, { kind: 'session' })
     expect(v.state).toBe('HOLD')
     expect(v.reasons).toEqual(['commit 90% of 48.0 GB, ceiling 90%'])
   })
 
   test('holds at the session ceiling, and fits never exceed it', () => {
     const six = Array.from({ length: 6 }, () => row())
-    expect(gate(snap(12_000, six), DEFAULTS, { kind: 'session' }).reasons).toEqual(['6 sessions, ceiling 6'])
-    expect(gate(snap(12_000, [row(), row(), row(), row(), row()]), DEFAULTS, { kind: 'session' }).fits).toBe(1)
+    expect(gate(snap(12_000, six), FIXED, { kind: 'session' }).reasons).toEqual(['6 sessions, ceiling 6'])
+    expect(gate(snap(12_000, [row(), row(), row(), row(), row()]), FIXED, { kind: 'session' }).fits).toBe(1)
   })
 
   test('counts subagents and reservations machine-wide from presence', () => {
     const s = snap(4096, [row({ agentsInFlight: 5, reservedMB: 300 }), row({ agentsInFlight: 3 })])
     expect(census(s)).toEqual({ sessions: 2, agents: 8, reservedMB: 300 })
-    const v = gate(s, DEFAULTS, { kind: 'agent', mb: 300 })
+    const v = gate(s, FIXED, { kind: 'agent', mb: 300 })
     expect(v.state).toBe('HOLD')
     expect(v.headroomMB).toBe(2260)
     expect(v.reasons).toEqual(['8 subagents, ceiling 8'])
   })
 
   test("takes this session's newer reservations off the headroom", () => {
-    expect(gate(snap(4096), DEFAULTS, { kind: 'session' }, 2000).state).toBe('HOLD')
+    expect(gate(snap(4096), FIXED, { kind: 'session' }, 2000).state).toBe('HOLD')
+  })
+})
+
+describe('auto floor', () => {
+  test('0 means 5% of total RAM; a set floor wins', () => {
+    expect(DEFAULTS.minFreeGB).toBe(0)
+    expect(floorMB(DEFAULTS, 15_724)).toBe(786)
+    expect(floorMB({ ...DEFAULTS, minFreeGB: 2 }, 15_724)).toBe(2048)
+    expect(gateOptions({ minFreeGB: -1 }).minFreeGB).toBe(0)
+  })
+
+  test('the case that held all day: 1.4 GB free on 15.4 GB now clears one session and two subagents', () => {
+    const s = snap(1434, [row(), row()], { machine: { totalMB: 15_724, availableMB: 1434, commitMB: 33_800, commitLimitMB: 47_400 } })
+    expect(gate(s, DEFAULTS, { kind: 'agent', mb: 307 }).fits).toBe(2)
+    expect(gate(s, DEFAULTS, { kind: 'session' }).state).toBe('HOLD')
+    expect(gate(s, DEFAULTS, { kind: 'session' }).reasons[0]).toBe('available 1.4 GB, floor 0.8 GB + 0.7 GB ask')
   })
 })
 
@@ -71,7 +89,7 @@ describe('gateOptions', () => {
   test('fills defaults for missing or nonsensical values', () => {
     expect(gateOptions({})).toEqual(DEFAULTS)
     expect(gateOptions({ minFreeGB: 2, maxSessions: 4.7, maxCommitPct: 140, maxAgents: -1 })).toEqual({
-      ...DEFAULTS,
+      ...FIXED,
       minFreeGB: 2,
       maxSessions: 4,
       maxCommitPct: 100,
@@ -97,23 +115,23 @@ describe('hysteresis', () => {
   })
 
   test('advance settles per sample, not per tick', () => {
-    let v = advance(undefined, snap(4096), DEFAULTS)
+    let v = advance(undefined, snap(4096), FIXED)
     expect(v.shown.state).toBe('CLEARED')
-    v = advance(v, snap(1000, undefined, { t: 2_000 }), DEFAULTS)
-    v = advance(v, snap(1000, undefined, { t: 2_000 }), DEFAULTS)
+    v = advance(v, snap(1000, undefined, { t: 2_000 }), FIXED)
+    v = advance(v, snap(1000, undefined, { t: 2_000 }), FIXED)
     expect(v.shown.state).toBe('CLEARED')
-    v = advance(v, snap(1000, undefined, { t: 3_000 }), DEFAULTS)
+    v = advance(v, snap(1000, undefined, { t: 3_000 }), FIXED)
     expect(v.shown.state).toBe('HOLD')
     expect(v.shown.fits).toBe(0)
     expect(v.band?.reasons[0]).toBe('available 1.0 GB, floor 1.5 GB + 0.7 GB ask')
   })
 
   test('the band stays while HOLD is clearing, and says so', () => {
-    let v = advance(undefined, snap(1000), DEFAULTS)
-    v = advance(v, snap(4096, undefined, { t: 2_000 }), DEFAULTS)
+    let v = advance(undefined, snap(1000), FIXED)
+    v = advance(v, snap(4096, undefined, { t: 2_000 }), FIXED)
     expect(v.shown.state).toBe('HOLD')
     expect(v.band?.reasons).toEqual(['clearing; waiting for one more sample'])
-    v = advance(v, snap(4096, undefined, { t: 3_000 }), DEFAULTS)
+    v = advance(v, snap(4096, undefined, { t: 3_000 }), FIXED)
     expect(v.band).toBeNull()
   })
 })

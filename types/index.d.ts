@@ -68,6 +68,7 @@ export type ClearancePane = {
   fits: number
   reasons: string[]
   machine: { totalMB: number; availableMB: number; commitMB: number; commitLimitMB: number }
+  /** `minFreeGB` is the floor in effect (the auto floor resolved). */
   limits: { minFreeGB: number; maxCommitPct: number; maxSessions: number; maxAgents: number }
   agents: number
   reservedMB: number

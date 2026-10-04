@@ -86,7 +86,7 @@ The inputs are the snapshot, this session's reservations and the options:
 
 | Option (`userConfig`) | Default | Meaning |
 |---|---|---|
-| `minFreeGB` | 1.5 | Available RAM that must remain after admitting |
+| `minFreeGB` | 0 (auto: 5% of RAM) | Available RAM that must remain after admitting. Was 1.5; changed 2026-10-04: it held a 15.4 GB machine that runs at 1–2 GB free nearly always (commit 33/46 GB), and THRASH watches real stalls. |
 | `maxCommitPct` | 90 | Commit as a share of the commit limit, after admitting |
 | `maxSessions` | 6 | Count ceiling for local sessions (0002) |
 | `maxAgents` | 8 | Count ceiling for subagents in flight, machine-wide (summed from presence files) |

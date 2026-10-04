@@ -4,6 +4,8 @@ import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
 
+// A fixed 1.5 GB floor, so the arithmetic below doesn't move with the auto floor.
+const FIXED = { ...DEFAULTS, minFreeGB: 1.5 }
 const snap = (availableMB: number, sessions = 2): Snapshot => ({
   schema: 1,
   epoch: 1,
@@ -56,13 +58,13 @@ describe('badge', () => {
   test('waits without a snapshot, and says a stale one is stale', () => {
     expect(badgeModel(undefined, 0, undefined)).toMatchObject({ mood: 'WAITING', note: 'waiting for a snapshot' })
     const s = snap(8000)
-    const view = advance(undefined, s, DEFAULTS)
+    const view = advance(undefined, s, FIXED)
     expect(badgeModel(s, 61_000, view)).toMatchObject({ mood: 'WAITING', note: 'snapshot 60 s old' })
   })
 
   test('cleared: headroom, room for more, the census', () => {
     const s = snap(8000, 3)
-    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+    const b = badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }))
     expect(b).toMatchObject({ mood: 'CLEARED', sessions: 3, agents: 3, usedPct: 51, availableMB: 7987.2 })
     expect(text(badgeLine(b, 120))).toBe('Cleared  6.3 GB headroom  room for 3 more sessions, 5 subagents  · 3 sessions, 3 agents')
     expect(text(badgeLine(b, 40))).toBe('Cleared  6.3 GB headroom')
@@ -70,7 +72,7 @@ describe('badge', () => {
 
   test('hold: the reasons, and where to divert on a wide band', () => {
     const s = snap(1024)
-    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+    const b = badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }))
     expect(b.mood).toBe('HOLD')
     expect(text(badgeLine(b, 120))).toContain('Hold new sessions  0.0 GB headroom  · no subagents fit  available 1.0 GB, floor 1.5 GB')
     expect(text(badgeLine(b, 120))).toContain('divert')
@@ -81,7 +83,7 @@ describe('badge', () => {
 describe('chip', () => {
   const at = (availableMB: number) => {
     const s = snap(availableMB)
-    return badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }), {
+    return badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }), {
       me: 's1',
       floorMB: 1536,
       agentAskMB: 300,

@@ -5,6 +5,7 @@ import type { Shown, Snapshot } from './snapshot.ts'
 // plus count ceilings for sessions and subagents. Pure: no `$` here.
 
 export type GateOptions = {
+  /** The available-RAM floor; 0 means auto, `AUTO_FLOOR_PCT` of total RAM. */
   minFreeGB: number
   maxCommitPct: number
   maxSessions: number
@@ -12,7 +13,17 @@ export type GateOptions = {
   sessionBaselineGB: number
 }
 
-export const DEFAULTS: GateOptions = { minFreeGB: 1.5, maxCommitPct: 90, maxSessions: 6, maxAgents: 8, sessionBaselineGB: 0.7 }
+export const DEFAULTS: GateOptions = { minFreeGB: 0, maxCommitPct: 90, maxSessions: 6, maxAgents: 8, sessionBaselineGB: 0.7 }
+
+/**
+ * The auto floor, as a share of total RAM (decided 2026-10-04): a fixed 1.5 GB
+ * held a 16 GB machine that runs at 1–2 GB free almost always, while Windows
+ * compresses and pages long before it stalls; THRASH (step 7) watches the stall.
+ */
+export const AUTO_FLOOR_PCT = 5
+
+/** The available-RAM floor for this machine, in MB. */
+export const floorMB = (o: GateOptions, totalMB: number) => (o.minFreeGB > 0 ? o.minFreeGB * 1024 : Math.round((totalMB * AUTO_FLOOR_PCT) / 100))
 
 /** `register(on, options)` values, with a default for any field that is missing or not a positive number. */
 export const gateOptions = (raw: Readonly<Record<string, unknown>>): GateOptions => {
@@ -20,8 +31,9 @@ export const gateOptions = (raw: Readonly<Record<string, unknown>>): GateOptions
     const v = raw[k]
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULTS[k]
   }
+  const floor = raw.minFreeGB
   return {
-    minFreeGB: pick('minFreeGB'),
+    minFreeGB: typeof floor === 'number' && Number.isFinite(floor) && floor > 0 ? floor : 0,
     maxCommitPct: Math.min(100, pick('maxCommitPct')),
     maxSessions: Math.floor(pick('maxSessions')),
     maxAgents: Math.floor(pick('maxAgents')),
@@ -65,14 +77,15 @@ export const gate = (s: Snapshot, o: GateOptions, ask: Ask, extraReservedMB = 0)
   const m = s.machine
   const c = census(s)
   const reserved = c.reservedMB + extraReservedMB
-  const memRoom = m.availableMB - reserved - o.minFreeGB * 1024
+  const floor = floorMB(o, m.totalMB)
+  const memRoom = m.availableMB - reserved - floor
   const commitRoom = (m.commitLimitMB * o.maxCommitPct) / 100 - m.commitMB - reserved
   const headroomMB = Math.max(0, Math.round(Math.min(memRoom, commitRoom)))
   const cost = ask.kind === 'session' ? o.sessionBaselineGB * 1024 : Math.max(1, ask.mb)
   const [count, ceiling, noun] = ask.kind === 'session' ? [c.sessions, o.maxSessions, 'sessions'] : [c.agents, o.maxAgents, 'subagents']
 
   const reasons: string[] = []
-  if (memRoom < cost) reasons.push(`available ${gb(m.availableMB - reserved)} GB, floor ${o.minFreeGB} GB + ${gb(cost)} GB ask`)
+  if (memRoom < cost) reasons.push(`available ${gb(m.availableMB - reserved)} GB, floor ${gb(floor)} GB + ${gb(cost)} GB ask`)
   if (commitRoom < cost)
     reasons.push(`commit ${Math.round(((m.commitMB + reserved) / m.commitLimitMB) * 100)}% of ${gb(m.commitLimitMB)} GB, ceiling ${o.maxCommitPct}%`)
   if (count >= ceiling) reasons.push(`${count} ${noun}, ceiling ${ceiling}`)

@@ -5,7 +5,7 @@ import { badgeLine, badgeModel, cardLines, footerLine, TONE_COLOR, type BadgeRun
 import { AGENT_DEFAULT_MB, DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startHistory, startTracker, type History, type Tracker } from './history.ts'
-import { advance, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
+import { advance, floorMB, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
 import { pathsFor } from './paths.ts'
@@ -274,7 +274,7 @@ export const register: Register = (on, options) => {
           : undefined
         const shown = badgeModel(snapshot, now, view, agent, {
           me: ctx.sessionId,
-          floorMB: opts.minFreeGB * 1024,
+          floorMB: floorMB(opts, fresh?.machine.totalMB ?? 0),
           agentAskMB: agentForecast(ctx, 'general-purpose', now).mb,
           sessionAskMB: opts.sessionBaselineGB * 1024,
         })

@@ -1,5 +1,5 @@
 import type { ClearancePane, ClearancePaneSession } from '../types'
-import { census, type GateOptions, type GateView } from './gate.ts'
+import { census, floorMB, type GateOptions, type GateView } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 
 // The /clearance pane (design.md § UI): the model built from each sample, and
@@ -38,7 +38,7 @@ export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: strin
     fits: view.shown.fits,
     reasons: view.band?.reasons ?? [],
     machine: s.machine,
-    limits: { minFreeGB: o.minFreeGB, maxCommitPct: o.maxCommitPct, maxSessions: o.maxSessions, maxAgents: o.maxAgents },
+    limits: { minFreeGB: Math.round(floorMB(o, s.machine.totalMB) / 102.4) / 10, maxCommitPct: o.maxCommitPct, maxSessions: o.maxSessions, maxAgents: o.maxAgents },
     agents: c.agents,
     reservedMB: c.reservedMB,
     sessions,

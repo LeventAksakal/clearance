@@ -1,4 +1,4 @@
-import { census, gate, type GateOptions, type Verdict } from './gate.ts'
+import { census, floorMB, gate, type GateOptions, type Verdict } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 
 // Admission (0004, design.md § Hooks): the spawn gate's deny text, the
@@ -63,7 +63,7 @@ export const headroomReport = (
   const m = s.machine
   const lines = [
     `clearance census (sampled ${Math.max(0, Math.round((now - s.t) / 1000))} s ago)`,
-    `machine: available ${gb(m.availableMB)} GB of ${gb(m.totalMB)} GB (floor ${o.minFreeGB} GB); commit ${gb(m.commitMB)}/${gb(m.commitLimitMB)} GB (ceiling ${o.maxCommitPct}%)`,
+    `machine: available ${gb(m.availableMB)} GB of ${gb(m.totalMB)} GB (floor ${gb(floorMB(o, m.totalMB))} GB); commit ${gb(m.commitMB)}/${gb(m.commitLimitMB)} GB (ceiling ${o.maxCommitPct}%)`,
     `headroom: ${gb(agent.headroomMB)} GB after reservations (${gb(c.reservedMB + extraReservedMB)} GB reserved)`,
     `sessions: ${c.sessions} of ${o.maxSessions}; subagents in flight: ${c.agents} of ${o.maxAgents}`,
     '',
