@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03; step 1 built 2026-10-04 (see § Step 1 findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: draft v0.1, 2026-10-03; steps 1–2 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -39,7 +39,7 @@ Every file has exactly one writer, so nothing needs a lock.
 |---|---|---|---|
 | `scribe/epoch-<n>` | the claimant that wins `CreateNew` | all | `{ sessionId, pid, at }` |
 | `snapshot.json` | sampler.ps1 (temp file + rename) | all sessions, leases mod, lane-supervisor | schema below |
-| `sessions/<sessionId>.json` | that session | sampler | presence: in-flight agents, reservations, last progress time |
+| `sessions/<sessionId>.json` | that session (the scribe deletes it an hour after the session left the registry: `$.fs` has no delete) | sampler | presence: `{ schema, sessionId, agentsInFlight, reservations, reservedMB, lastProgressAt, t }` |
 | `history/<yyyy-mm>/<sessionId>.jsonl` | that session | forecaster | one record per finished subagent or session |
 | `logs/<sessionId>.log` | that session | people debugging | the last 200 election and sampler lines |
 
@@ -69,8 +69,7 @@ Every file has exactly one writer, so nothing needs a lock.
     "containers": [{ "name": "ozu_aps_postgres", "project": "core", "memMB": 158 }],
     "agentsInFlight": 2, "lastProgressAt": 1791036300000            // from presence
   }],
-  "unattributed": { "containers": [{ "name": "supabase_db_supabase", "project": "supabase", "memMB": 319 }] },
-  "clearance": { "state": "HOLD", "headroomMB": 420, "reasons": ["free 0.7 GB < 1.5 GB floor"] }
+  "unattributed": { "containers": [{ "name": "supabase_db_supabase", "project": "supabase", "memMB": 319 }] }
 }
 ```
 
@@ -78,7 +77,8 @@ Every file has exactly one writer, so nothing needs a lock.
 - `availableMB` is free plus standby (Task Manager's Available). The free list alone read 73 MB while 3.2 GB was available.
 - `commitLimitMB` is read on every sample, because Windows grows the pagefile.
 - A container is attributed through its `com.docker.compose.project.working_dir` label to the session whose `cwd` contains that path. Without the label it lands in `unattributed`, and the convention checks name it.
-- `clearance` is the scribe's verdict for the machine. Each session adds its own reservations when it gates.
+- **No machine verdict in schema 1 yet.** Each session runs `gate.ts` on the snapshot and adds its own reservations newer than the sample. The sampler has no thresholds, and the snapshot's one-writer rule keeps sessions from writing it; a `clearance` field moves in when a consumer (the leases mod) needs it.
+- `agentsInFlight`, `reservedMB` and `lastProgressAt` on a session row come from its presence file, and are absent for a session without the mod.
 
 ### The gate (pure functions, `gate.ts`)
 
@@ -186,12 +186,21 @@ Scripts run in place: `pwsh -NoProfile -NonInteractive -File <plugin root>/scrip
 
 Each step is validated, tested and committed on its own.
 
-## Step 1 findings (2026-10-04, Claude Code 2.1.286)
+## Build findings (2026-10-04, Claude Code 2.1.286)
+
+### Step 1
 
 - **No CIM in the sampler.** Under a CLI session, a pwsh child (the Store build in `C:\Program Files\WindowsApps`) is denied loading `Microsoft.Management.Infrastructure.Native.Unmanaged.DLL` (E_ACCESSDENIED), so every `Get-CimInstance` fails. The sampler now uses `GlobalMemoryStatusEx`, one Toolhelp snapshot for parent pids, and `Process.GetProcesses()` for private bytes (compiled once with `Add-Type`): 60–250 ms per sample against 560–830 ms with CIM, and a first snapshot 3–4 s after start.
 - **CLI sessions are in the registry** (`~/.claude/sessions/<pid>.json`, `entrypoint: "cli"`).
 - **Failover, measured:** a scribe killed with `taskkill /F` had its registry entry removed; the other session claimed the next epoch 11.8 s after the kill, and its snapshot was fresh within one interval. The killed scribe's sampler exited on its owner check.
 - **Resign:** after `resigned-<n>`, the next claim lands within one watchdog tick (about 1–2 s, claim included).
+
+### Step 2
+
+- **Status line** shows the settled state: `clearance ✓ 3.1 GB · 2 more` (headroom, and how many more sessions fit) or `clearance ■ HOLD 0.4 GB`. Hysteresis advances once per sample (`snapshot.t`), not per tick.
+- **Band** (`AbovePrompt`) draws from `$.state` `clearance.band`; while HOLD clears (one sample of CLEARED seen) it stays up and says so. Verified live with `minFreeGB: 64` in a CLI peer: the status line read `clearance ■ HOLD 0.0 GB` and the band listed both reasons (floor, and 6 sessions at a ceiling of 6).
+- **Tests:** the `claude plugin test` engine exposes events only (no `$.state`), so the HOLD drawing is covered live; the cleared case is a mount test on terminal and desktop. A hook may not shadow `next` (validator).
+- **Session ceiling semantics:** the gate asks for one more session, so 6 sessions at a ceiling of 6 is HOLD; the count includes sessions without the mod (from the registry).
 
 ## Open questions
 
