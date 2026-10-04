@@ -4,6 +4,8 @@ import { bandLine, badgeModel, cardLines, light, LIGHT_COLOR, TONE_COLOR, type B
 import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
+import { checksReport, runChecks } from './checks.ts'
+import { emptyPressure, fold, isPressured, isThrash, learnFloor, parsePressure, STALL_MS, type Floor, type Pressure } from './pressure.ts'
 import { advance, floorMB, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
@@ -85,6 +87,38 @@ type Ctx = {
   growth: ReturnType<typeof startGrowthWatch>
   /** The person fixed the session cost in the options; otherwise it is learned. */
   sessionFixed: boolean
+  /** The paging histogram: kept and written by the scribe, read by the others. */
+  pressure: Pressure | undefined
+  floor: Floor
+  /** Pressured samples in a row (THRASH needs THRASH_RUN). */
+  pressuredRun: number
+  /** A THRASH episode is on: its one toast has been shown. */
+  inThrash: boolean
+}
+
+/** The scribe writes the paging histogram this often (in samples: one minute). */
+const PRESSURE_WRITE_SAMPLES = 12
+
+const NO_FLOOR: Floor = { mb: undefined, calmP90: undefined, calmFromMB: undefined, n: 0, basis: 'learning: no paging samples yet' }
+
+/** The learned floor goes into the gate (it applies while the floor option is 0, auto). */
+const relearnFloor = (ctx: Ctx) => {
+  ctx.floor = ctx.pressure ? learnFloor(ctx.pressure) : NO_FLOOR
+  ctx.opts.learnedFloorMB = ctx.floor.mb
+}
+
+const floorBasis = (ctx: Ctx) =>
+  ctx.opts.minFreeGB > 0 ? `set to ${ctx.opts.minFreeGB} GB in the options` : ctx.floor.mb !== undefined ? `learned: ${ctx.floor.basis}` : `policy 5% of RAM (${ctx.floor.basis})`
+
+/** Reads the paging histogram written by the scribe; a missing or broken file leaves what is in memory. */
+async function loadPressure($: EngineInterface, ctx: Ctx, path: string): Promise<void> {
+  try {
+    const p = parsePressure(await $.fs.read(path))
+    if (p) ctx.pressure = p
+  } catch {
+    // no histogram yet
+  }
+  relearnFloor(ctx)
 }
 
 /** Samples in the band's RAM sparkline: 10 × 5 s, the last 50 s. */
@@ -163,8 +197,18 @@ export const register: Register = (on, options) => {
     tracker: undefined,
     growth: startGrowthWatch(),
     sessionFixed: opts.sessionBaselineGB > 0,
+    pressure: undefined,
+    floor: NO_FLOOR,
+    pressuredRun: 0,
+    inThrash: false,
   }
   let sessionWrittenAt = 0
+  let pressureT = -1
+  let pressureFolded = 0
+  let pressurePath = ''
+  let isScribeNow = false
+  let lastThrash: string | undefined
+  let loadPressureNow: () => Promise<void> = async () => {}
   /** RAM in use, percent, one per sample: the band's sparkline. */
   const ramTrail: number[] = []
   let trailT = -1
@@ -186,6 +230,7 @@ export const register: Register = (on, options) => {
       historyLoadedAt = now
       await history.reload()
       relearnSession(ctx, now)
+      if (!isScribeNow && pressurePath) await loadPressureNow()
     }
   }
 
@@ -217,7 +262,14 @@ export const register: Register = (on, options) => {
     } catch (err) {
       sessionIo.log(`history: ${String(err)}`)
     }
-    await $.command.register({ name: 'clearance', description: "Show this machine's sessions, their memory and the headroom in a pane" })
+    pressurePath = paths.pressure
+    loadPressureNow = () => loadPressure($, ctx, paths.pressure)
+    await loadPressureNow()
+    sessionIo.log(`floor: ${floorBasis(ctx)}`)
+    await $.command.register({
+      name: 'clearance',
+      description: "Show this machine's sessions, their memory and the headroom in a pane; `/clearance check` runs the convention checks",
+    })
     await $.tool.register({
       name: 'headroom',
       description:
@@ -237,8 +289,37 @@ export const register: Register = (on, options) => {
       onTick: (snapshot, isScribe, now) => {
         const fresh = snapshot && isFresh(snapshot, now) ? snapshot : undefined
         ctx.latest = fresh
-        view = fresh ? advance(view, fresh, opts, presence.reservedSince(fresh.t, now)) : undefined
-        const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now) : null
+        isScribeNow = isScribe
+        // Step 7: fold the sample into the paging histogram (the scribe), count a
+        // pressured run, and judge THRASH, once per sample.
+        let thrash: string | undefined = lastThrash
+        if (fresh && fresh.t !== pressureT) {
+          pressureT = fresh.t
+          const pages = fresh.machine.pagesInPerSec
+          if (isScribe && pages !== undefined) {
+            ctx.pressure = fold(ctx.pressure ?? emptyPressure(fresh.machine.totalMB), fresh.machine.availableMB, pages, fresh.t)
+            if (++pressureFolded % PRESSURE_WRITE_SAMPLES === 0) {
+              relearnFloor(ctx)
+              void $.fs.write(paths.pressure, JSON.stringify(ctx.pressure)).catch(err => sessionIo.log(`pressure write: ${String(err)}`))
+            }
+          }
+          ctx.pressuredRun = isPressured(pages, ctx.floor) ? ctx.pressuredRun + 1 : 0
+          const floor = floorMB(opts, fresh.machine.totalMB)
+          const progress = Math.max(0, ...fresh.sessions.map(r => r.lastProgressAt ?? 0))
+          thrash = isThrash({ pressuredRun: ctx.pressuredRun, availableMB: fresh.machine.availableMB, floorMB: floor, lastProgressAt: progress || undefined, now })
+            ? ctx.pressuredRun >= 3
+              ? `THRASH: paging ${Math.round(pages ?? 0)}/s (calm ≤ ${ctx.floor.calmP90}/s) with ${(fresh.machine.availableMB / 1024).toFixed(1)} GB free, under the ${(floor / 1024).toFixed(1)} GB floor`
+              : `THRASH: ${(fresh.machine.availableMB / 1024).toFixed(1)} GB free, under half the floor, and no session progressed for ${STALL_MS / 60_000} min`
+            : undefined
+          lastThrash = thrash
+        }
+        view = fresh ? advance(view, fresh, opts, presence.reservedSince(fresh.t, now), thrash) : undefined
+        if (view?.shown.state === 'THRASH' && !ctx.inThrash) {
+          ctx.inThrash = true
+          sessionIo.log(thrash ?? 'THRASH')
+          $.ui.toast(`clearance: THRASH. The machine is paging hard below its floor; every spawn is refused until it recovers.`)
+        } else if (view && view.shown.state !== 'THRASH') ctx.inThrash = false
+        const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now, floorBasis(ctx)) : null
         void update($, pane, () => model)
         $.ui.status(ctx.footerDrawn ? undefined : statusLine(snapshot, now, view?.shown))
         const own = fresh?.sessions.find(r => r.sessionId === ctx.sessionId)
@@ -262,6 +343,7 @@ export const register: Register = (on, options) => {
           agentAskMB: agentForecast(ctx, 'general-purpose', now).mb,
           sessionAskMB: opts.sessionBaselineGB * 1024,
           ramTrail: [...ramTrail],
+          floorBasis: floorBasis(ctx),
         })
         const key = JSON.stringify(shown)
         if (key !== shownBadge) {
@@ -287,6 +369,14 @@ export const register: Register = (on, options) => {
       return result
     }
     if (!presence) return next(e)
+    if (view?.shown.state === 'THRASH') {
+      ctx.io?.log(`spawn denied, THRASH: ${e.subagentType} "${e.description}"`)
+      return {
+        deny:
+          `clearance: THRASH. ${view.band?.reasons[0] ?? 'The machine is paging hard below its floor.'} Every spawn is refused until it recovers: ` +
+          'finish the work in this conversation, stop heavy processes, or divert to a cloud session (claude.ai/code) or another machine.',
+      }
+    }
     const now = await $.clock.now()
     const s = await current($, ctx, now)
     const mb = agentForecast(ctx, e.subagentType, now).mb
@@ -369,7 +459,12 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  on('command.run', { command: 'clearance' }, async $ => {
+  on('command.run', { command: 'clearance' }, async ($, e) => {
+    if (e.args.trim() === 'check') {
+      const s = ctx.latest
+      if (!s || !ctx.io) return { text: 'clearance: no fresh snapshot yet; try again in a few seconds.' }
+      return { text: checksReport(await runChecks(ctx.io, s), s.containers !== undefined) }
+    }
     await $.ui.open({ id: PANE, title: PANE_TITLE })
     return { text: 'clearance pane opened.' }
   })
@@ -402,7 +497,7 @@ export const register: Register = (on, options) => {
     const sprite =
       // The terminal's table stands a fragment in for Svg; it gets a glyph.
       e.surface !== 'terminal' && 'Svg' in t ? (
-        <t.Svg source={spriteSvg(tier)} alt={`clearance: ${tier}`} width={W * SCALE} height={H * SCALE} isInteractive />
+        <t.Svg source={spriteSvg(b.mood === 'THRASH' ? 'thrash' : tier)} alt={`clearance: ${b.mood === 'THRASH' ? 'THRASH' : tier}`} width={W * SCALE} height={H * SCALE} isInteractive />
       ) : (
         <Text color={LIGHT_COLOR[tier]} bold>
           ●

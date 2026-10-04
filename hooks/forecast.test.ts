@@ -8,6 +8,7 @@ const NOW = 1_800_000_000_000
 
 const agent = (costMB: number, over: Partial<AgentRecord> = {}): AgentRecord => ({
   kind: 'agent',
+  v: 2,
   t: NOW,
   type: 'general-purpose',
   durationMs: 60_000,
@@ -20,6 +21,7 @@ const agent = (costMB: number, over: Partial<AgentRecord> = {}): AgentRecord => 
 
 const session = (peakSelfMB: number, peakChildMB: number, over: Partial<SessionRecord> = {}): SessionRecord => ({
   kind: 'session',
+  v: 2,
   t: NOW,
   sessionId: 's',
   peakSelfMB,
@@ -83,6 +85,10 @@ describe('session forecast', () => {
 })
 
 describe('history records', () => {
+  test('records from before the start-time check are not used', () => {
+    expect(parseHistory('{"kind":"session","t":1,"sessionId":"s","peakSelfMB":780,"peakChildMB":8397,"samples":483}')).toEqual([])
+  })
+
   test('round-trip through JSONL, skipping torn lines', () => {
     const text = historyText([agent(300)], session(700, 300)) + '{"kind":"agent","t":'
     expect(parseHistory(text)).toEqual([agent(300), session(700, 300)])
@@ -102,6 +108,7 @@ describe('tracker', () => {
     tr.sample({ selfMB: 700, childMB: 250 }, 3)
     expect(tr.stopped('a', 40)).toEqual({
       kind: 'agent',
+      v: 2,
       t: 40,
       type: 'Explore',
       durationMs: 30,
@@ -138,7 +145,7 @@ describe('tracker', () => {
     expect(tr.session('s', 1)).toBeUndefined()
     tr.sample({ selfMB: 600, childMB: 400 }, 1)
     tr.sample({ selfMB: 800, childMB: 100 }, 2)
-    expect(tr.session('s', 3)).toEqual({ kind: 'session', t: 3, sessionId: 's', peakSelfMB: 800, peakChildMB: 400, samples: 2 })
+    expect(tr.session('s', 3)).toEqual({ kind: 'session', v: 2, t: 3, sessionId: 's', peakSelfMB: 800, peakChildMB: 400, samples: 2 })
   })
 })
 

@@ -12,6 +12,8 @@ export type GateOptions = {
   maxAgents: number
   /** What a new session costs; 0 in the options means learned (register.tsx fills it from history and the live sessions). */
   sessionBaselineGB: number
+  /** The floor learned from paging pressure (step 7), MB; used while `minFreeGB` is 0 (auto). Not an option. */
+  learnedFloorMB?: number
 }
 
 export const DEFAULTS: GateOptions = { minFreeGB: 0, maxCommitPct: 90, maxSessions: 6, maxAgents: 8, sessionBaselineGB: 0 }
@@ -24,11 +26,12 @@ export const DEFAULTS: GateOptions = { minFreeGB: 0, maxCommitPct: 90, maxSessio
 export const AUTO_FLOOR_PCT = 5
 
 /** The available-RAM floor for this machine, in MB. */
-export const floorMB = (o: GateOptions, totalMB: number) => (o.minFreeGB > 0 ? o.minFreeGB * 1024 : Math.round((totalMB * AUTO_FLOOR_PCT) / 100))
+export const floorMB = (o: GateOptions, totalMB: number) =>
+  o.minFreeGB > 0 ? o.minFreeGB * 1024 : o.learnedFloorMB !== undefined ? o.learnedFloorMB : Math.round((totalMB * AUTO_FLOOR_PCT) / 100)
 
 /** `register(on, options)` values, with a default for any field that is missing or not a positive number. */
 export const gateOptions = (raw: Readonly<Record<string, unknown>>): GateOptions => {
-  const pick = (k: keyof GateOptions) => {
+  const pick = (k: 'maxCommitPct' | 'maxSessions' | 'maxAgents') => {
     const v = raw[k]
     return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULTS[k]
   }
@@ -42,7 +45,7 @@ export const gateOptions = (raw: Readonly<Record<string, unknown>>): GateOptions
   }
 }
 
-export type GateState = 'CLEARED' | 'HOLD'
+export type GateState = 'CLEARED' | 'HOLD' | 'THRASH'
 
 /** What is asked for: a new session (the baseline), or a subagent with its forecast. */
 export type Ask = { kind: 'session' } | { kind: 'agent'; mb: number }
@@ -108,14 +111,20 @@ export const settle = (prev: Settled | undefined, next: GateState, need = 2): Se
 /** The gate as one session shows it: settled per sample, never per tick (ticks reread the same sample). */
 export type GateView = { t: number; settled: Settled; shown: Shown; band: ClearanceBand | null }
 
-export const advance = (prev: GateView | undefined, s: Snapshot, o: GateOptions, extraReservedMB = 0): GateView => {
+/**
+ * `thrash` is step 7's verdict for this sample (pressure.ts), with its reason:
+ * it overrides the memory gate and settles with the same hysteresis.
+ */
+export const advance = (prev: GateView | undefined, s: Snapshot, o: GateOptions, extraReservedMB = 0, thrash?: string): GateView => {
   const v = gate(s, o, { kind: 'session' }, extraReservedMB)
-  const settled = prev && prev.t === s.t ? prev.settled : settle(prev?.settled, v.state)
-  const isHeld = settled.shown === 'HOLD'
+  const state: GateState = thrash ? 'THRASH' : v.state
+  const settled = prev && prev.t === s.t ? prev.settled : settle(prev?.settled, state)
+  const isHeld = settled.shown !== 'CLEARED'
+  const reasons = settled.shown === 'THRASH' ? [thrash ?? 'THRASH: clearing; waiting for one more sample'] : v.reasons
   return {
     t: s.t,
     settled,
     shown: { state: settled.shown, headroomMB: v.headroomMB, fits: isHeld ? 0 : v.fits },
-    band: isHeld ? { state: 'HOLD', headroomMB: v.headroomMB, reasons: v.reasons.length > 0 ? v.reasons : ['clearing; waiting for one more sample'] } : null,
+    band: isHeld ? { state: 'HOLD', headroomMB: v.headroomMB, reasons: reasons.length > 0 ? reasons : ['clearing; waiting for one more sample'] } : null,
   }
 }

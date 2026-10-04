@@ -1,4 +1,5 @@
 import type { ClearanceBadge } from '../types'
+import { attributeContainers } from './checks.ts'
 import { census, type GateView, type Verdict } from './gate.ts'
 import { ageMs, isFresh, type Snapshot } from './snapshot.ts'
 
@@ -26,10 +27,15 @@ const waiting = (note: string): ClearanceBadge => ({
   rows: [],
   otherMB: 0,
   ramTrail: [],
+  pagesInPerSec: null,
+  floorBasis: '',
+  desktopMB: 0,
+  dockerVmMB: 0,
+  unattributedContainersMB: 0,
 })
 
 /** What the chip needs beyond the snapshot: this session, and the gate's floor and asks. */
-export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number; ramTrail?: number[] }
+export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number; ramTrail?: number[]; floorBasis?: string }
 
 /** Rounded to what the lines show (0.1 GB), so a few MB of drift doesn't redraw them. */
 const tenth = (mb: number) => (Math.round(mb / 102.4) * 1024) / 10
@@ -49,6 +55,10 @@ export const badgeModel = (
   if (!isFresh(s, now)) return waiting(`snapshot ${Math.round(ageMs(s, now) / 1000)} s old`)
   const c = census(s)
   const m = s.machine
+  const { bySession, unattributed } = attributeContainers(s)
+  const sum = (xs: readonly { memMB: number }[] | undefined) => (xs ?? []).reduce((a, x) => a + x.memMB, 0)
+  const sessionsMB = s.sessions.reduce((a, r) => a + r.selfMB + r.childMB, 0)
+  const known = sessionsMB + (s.desktop?.privateMB ?? 0) + (s.dockerVm?.privateMB ?? 0)
   return {
     mood: view.shown.state,
     headroomMB: tenth(view.shown.headroomMB),
@@ -71,10 +81,16 @@ export const badgeModel = (
         childMB: tenth(r.childMB),
         agents: r.agentsInFlight ?? null,
         isSelf: r.sessionId === at.me,
+        containersMB: tenth(sum(bySession.get(r.sessionId))),
       }))
       .sort((a, b) => b.selfMB + b.childMB - (a.selfMB + a.childMB)),
-    otherMB: tenth(Math.max(0, m.totalMB - m.availableMB - s.sessions.reduce((sum, r) => sum + r.selfMB + r.childMB, 0))),
+    otherMB: tenth(Math.max(0, m.totalMB - m.availableMB - known)),
     ramTrail: at.ramTrail ?? [],
+    pagesInPerSec: m.pagesInPerSec ?? null,
+    floorBasis: at.floorBasis ?? '',
+    desktopMB: tenth(s.desktop?.privateMB ?? 0),
+    dockerVmMB: tenth(s.dockerVm?.privateMB ?? 0),
+    unattributedContainersMB: tenth(sum(unattributed)),
   }
 }
 
@@ -93,7 +109,7 @@ export type Light = 'green' | 'yellow' | 'red' | 'grey'
 
 /** green: a session fits; yellow: only subagents fit; red: nothing fits; grey: no numbers. */
 export const light = (b: ClearanceBadge): Light =>
-  b.mood === 'WAITING' ? 'grey' : b.mood === 'CLEARED' && b.fits > 0 ? 'green' : b.agentFits > 0 ? 'yellow' : 'red'
+  b.mood === 'WAITING' ? 'grey' : b.mood === 'THRASH' ? 'red' : b.mood === 'CLEARED' && b.fits > 0 ? 'green' : b.agentFits > 0 ? 'yellow' : 'red'
 
 export const LIGHT_COLOR: Record<Light, string> = { green: '#3fb950', yellow: '#e3b341', red: '#f85149', grey: '#94a3b8' }
 
@@ -107,19 +123,25 @@ export const cardLines = (b: ClearanceBadge): BadgeRun[][] => {
   const lines: BadgeRun[][] = [
     [{ text: 'RAM ', strong: true }, { text: `${gb(used)} of ${gb(b.totalMB)} GB in use, ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)} GB` }],
     [
+      { text: 'paging ', strong: true },
+      { text: `${b.pagesInPerSec === null ? 'not read' : `${Math.round(b.pagesInPerSec)}/s`} · floor: ${b.floorBasis || 'policy, 5% of RAM'}`, dim: true },
+    ],
+    [
       { text: 'asks ', strong: true },
       { text: `session ${gb(b.sessionAskMB)} GB, subagent ${gb(b.agentAskMB)} GB → ` },
       { text: `${plural(b.fits, 'session')}, ${plural(b.agentFits, 'agent')} fit`, color: LIGHT_COLOR[light(b)] },
     ],
   ]
   for (const reason of b.reasons) lines.push([{ text: `hold: ${reason}`, color: LIGHT_COLOR.red }])
-  lines.push([{ text: `${col('session', 16)} ${'self'.padStart(5)} ${'child'.padStart(5)}  agents`, dim: true }])
+  lines.push([{ text: `${col('GB', 16)} ${'self'.padStart(5)} ${'child'.padStart(5)} ${'ctr'.padStart(5)}  agents`, dim: true }])
   for (const r of b.rows)
     lines.push([
-      { text: `${col(r.where, 16)} ${num(r.selfMB)} ${num(r.childMB)}  ${r.agents === null ? '-' : r.agents}`, strong: r.isSelf },
+      { text: `${col(r.where, 16)} ${num(r.selfMB)} ${num(r.childMB)} ${num(r.containersMB)}  ${r.agents === null ? '-' : r.agents}`, strong: r.isSelf },
       ...(r.isSelf ? [{ text: '  ← this', dim: true }] : []),
     ])
-  lines.push([{ text: `${col('everything else', 16)} ${num(b.otherMB)}`, dim: true }, { text: '  desktop app, WSL, browsers…', dim: true }])
+  if (b.desktopMB) lines.push([{ text: `${col('desktop app', 16)} ${num(b.desktopMB)}`, dim: true }])
+  if (b.dockerVmMB) lines.push([{ text: `${col('WSL/Docker VM', 16)} ${num(b.dockerVmMB)}`, dim: true }, { text: `  unattributed containers ${gb(b.unattributedContainersMB)}`, dim: true }])
+  lines.push([{ text: `${col('everything else', 16)} ${num(b.otherMB)}`, dim: true }, { text: '  browsers, system, the rest', dim: true }])
   return lines
 }
 
@@ -137,6 +159,12 @@ export const bandLine = (b: ClearanceBadge): BadgeRun[] => {
   const tier = light(b)
   const color = LIGHT_COLOR[tier]
   if (tier === 'grey') return [{ text: '● clearance', color, strong: true }, { text: `  ${b.note}`, dim: true }]
+  if (b.mood === 'THRASH')
+    return [
+      { text: '▲ THRASH', color, strong: true },
+      { text: `  paging ${b.pagesInPerSec === null ? '?' : Math.round(b.pagesInPerSec)}/s  ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)}`, color },
+      { text: '  spawns refused', dim: true },
+    ]
   const verdict = tier === 'red' ? '● hold' : '● cleared'
   return [
     { text: verdict, color, strong: true },

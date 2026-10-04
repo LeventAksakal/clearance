@@ -11,8 +11,16 @@
 // how sure to be of covering it.
 
 /** A finished subagent: how much its session's process tree grew while it ran. */
+/**
+ * Record version: 2 from the sampler that checks process start times. Records
+ * without it were measured when a reused pid could adopt an orphaned tree (one
+ * session read 8.4 GB of children), so they are not used.
+ */
+export const RECORD_VERSION = 2
+
 export type AgentRecord = {
   kind: 'agent'
+  v: typeof RECORD_VERSION
   /** When it stopped. */
   t: number
   type: string
@@ -28,7 +36,7 @@ export type AgentRecord = {
 }
 
 /** A session's peaks: what a session grows to. One per session, rewritten as it grows. */
-export type SessionRecord = { kind: 'session'; t: number; sessionId: string; peakSelfMB: number; peakChildMB: number; samples: number }
+export type SessionRecord = { kind: 'session'; v: typeof RECORD_VERSION; t: number; sessionId: string; peakSelfMB: number; peakChildMB: number; samples: number }
 
 export type HistoryRecord = AgentRecord | SessionRecord
 
@@ -119,6 +127,7 @@ export const parseHistory = (text: string): HistoryRecord[] => {
     try {
       const r = JSON.parse(line) as Partial<HistoryRecord>
       const num = (x: unknown) => typeof x === 'number' && Number.isFinite(x)
+      if (r.v !== RECORD_VERSION) continue
       if (r.kind === 'agent' && num(r.t) && typeof r.type === 'string' && num(r.costMB) && num(r.samples)) out.push(r as AgentRecord)
       else if (r.kind === 'session' && num(r.t) && num(r.peakSelfMB) && num(r.peakChildMB) && num(r.samples)) out.push(r as SessionRecord)
     } catch {

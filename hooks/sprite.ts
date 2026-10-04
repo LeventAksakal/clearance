@@ -5,7 +5,7 @@
 // whose SMIL animation flips the frames, so the surface animates it with no
 // timer or redraw here. Pure: no `$` here.
 
-export type Mood = 'green' | 'yellow' | 'red' | 'grey'
+export type Mood = 'green' | 'yellow' | 'red' | 'grey' | 'thrash'
 
 export const W = 16
 export const H = 13
@@ -20,10 +20,11 @@ const PALETTE: Record<Mood, Record<string, string>> = {
   yellow: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#e3b341', l: '#f8d66d', m: '#9e6a03' },
   red: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#f85149', l: '#ff7b72', m: '#6e2a24' },
   grey: { b: '#64748b', s: '#475569', e: '#0b1020', p: '#94a3b8', l: '#94a3b8', m: '#475569', z: '#cbd5e1' },
+  thrash: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#f85149', l: '#ffffff', m: '#f85149' },
 }
 
 /** Milliseconds per frame. */
-const PACE: Record<Mood, number> = { green: 110, yellow: 150, red: 120, grey: 220 }
+const PACE: Record<Mood, number> = { green: 110, yellow: 150, red: 120, grey: 220, thrash: 60 }
 
 const seq = <T>(xs: readonly T[]): T[] => {
   if (xs.length !== FRAMES) throw new Error(`a mood needs ${FRAMES} frames, got ${xs.length}`)
@@ -50,7 +51,11 @@ const SCRIPT: Record<Mood, Frame[]> = (() => {
     const bob = seq([0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1] as const)
     return bob.map((b, i): Frame => ({ left: 'down', right: 'down', bob: b, dx: 0, blink: true, lamp: 'dim', z: i < 8 ? i : -1 }))
   }
-  return { green: cleared(), yellow: oneArm(), red: hold(), grey: waiting() }
+  const thrash = () => {
+    const dx = seq([0, 1, 0, -1, 0, 1, 0, -1, 0, 1, 0, -1] as const)
+    return dx.map((d, i): Frame => ({ left: 'cross', right: 'cross', bob: (i % 2) as 0 | 1, dx: d, blink: false, lamp: i % 2 ? 'on' : 'dim', z: -1 }))
+  }
+  return { green: cleared(), yellow: oneArm(), red: hold(), grey: waiting(), thrash: thrash() }
 })()
 
 /** One frame as rows of palette keys, `.` transparent. */

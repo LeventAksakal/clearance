@@ -7,6 +7,8 @@ export type Paths = {
   snapshot: string
   presence: string
   history: string
+  /** The paging-pressure histogram (step 7): the scribe's to write. */
+  pressure: string
   /** ~/.claude/sessions: the local session registry. Read only the *.json files; the *.key files are secrets. */
   registry: string
 }
@@ -20,6 +22,7 @@ export const pathsFor = (home: string): Paths => {
     snapshot: `${root}\\snapshot.json`,
     presence: `${root}\\sessions`,
     history: `${root}\\history`,
+    pressure: `${root}\\pressure.json`,
     registry: `${claude}\\sessions`,
   }
 }

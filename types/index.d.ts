@@ -10,11 +10,13 @@ export type ClearanceBadgeRow = {
   /** Subagents in flight; null for a session without the mod. */
   agents: number | null
   isSelf: boolean
+  /** Its attributed containers' memory. */
+  containersMB: number
 }
 
 /** The band's badge, always up: the marshaller's mood and the line beside it. */
 export type ClearanceBadge = {
-  mood: 'CLEARED' | 'HOLD' | 'WAITING'
+  mood: 'CLEARED' | 'HOLD' | 'THRASH' | 'WAITING'
   /** Rounded to 0.1 GB; null while WAITING. */
   headroomMB: number | null
   /** More sessions that fit now. */
@@ -41,6 +43,14 @@ export type ClearanceBadge = {
   otherMB: number
   /** RAM in use, percent, over the last samples, oldest first: the band's sparkline. */
   ramTrail: number[]
+  /** Hard page reads per second in the latest sample; null when the sampler doesn't read it. */
+  pagesInPerSec: number | null
+  /** What the floor rests on (learned from paging, or the policy). */
+  floorBasis: string
+  /** The desktop app, the WSL/Docker VM and the containers no session owns, MB. */
+  desktopMB: number
+  dockerVmMB: number
+  unattributedContainersMB: number
 }
 
 /** One session row of the /clearance pane. */
@@ -65,7 +75,7 @@ export type ClearancePane = {
   t: number
   epoch: number
   isScribe: boolean
-  state: 'CLEARED' | 'HOLD'
+  state: 'CLEARED' | 'HOLD' | 'THRASH'
   headroomMB: number
   fits: number
   reasons: string[]
@@ -75,6 +85,8 @@ export type ClearancePane = {
   agents: number
   reservedMB: number
   sessions: ClearancePaneSession[]
+  /** Memory no session owns, and what the floor rests on: one line each. */
+  others: string[]
 }
 
 declare module 'claude-code' {

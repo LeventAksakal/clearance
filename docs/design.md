@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03; steps 1–4 built 2026-10-04 (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: v0.1.0, 2026-10-04; all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -275,3 +275,19 @@ Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too
 - **One dense line**, chosen from three mockups: `[marshaller] ● cleared 2s·6a  RAM ▁▂▃▅▆▇ 82%  2.8 GB free` (sessions·agents that fit; a 10-sample RAM sparkline, 50 s). Red reads `● hold 0s·0a … 1.4 GB free, floor 0.8`.
 - **Marshaller by tier:** green waves both paddles, yellow waves one (only subagents fit), red crosses them overhead, grey dozes.
 - **Hover** expands the band upward with the card: RAM and floor, the forecasts and what fits, hold reasons, every session's self/child/agents, and everything else.
+
+### Step 6: Docker, the desktop app, and the convention checks
+
+- **The sampler adopted orphans.** It linked children to parents by pid alone; Windows doesn't reparent orphans, so a reused pid made a session adopt a whole orphaned tree. This session read 8.4 GB of children (the 5.2 GB WSL VM plus a detached 2.1 GB dev server). `Get-Descendants` now counts a child only if it started after its parent (`Process.StartTime`), and history records carry `v: 2`; earlier ones are ignored.
+- **Desktop row:** the Electron tree the desktop sessions run under, less the sessions: 2.5 GB in 38 processes here. (A PowerShell trap on the way: `$root` in a loop is the script's `[string]$Root` parameter, names being case-insensitive, so each pid became a string.)
+- **WSL/Docker VM row:** the `vmmem*` processes, 5.5 GB here.
+- **Containers:** `docker ps` and `docker stats --no-stream` in a thread job every 6th tick (about 3 s, never inside a sample), joined to the snapshot as `containers` (name, compose project, `working_dir` label, host ports, memory). Attribution is in TypeScript (`checks.ts`): the session whose folder holds the `working_dir`, or sits inside it, the longest folder winning. 11 containers here: the 3 `ozu-aps` ones attributed, the 8 Supabase CLI ones unattributed (no label).
+- **Checks** (`/clearance check`, read-only): Supabase `project_id` default or shared; compose projects without the label; hard-coded host ports in compose files (the session folder and one level down); host-port and project-name collisions among running containers.
+- **The snapshot replace** also retries on `UnauthorizedAccessException` (seen once live), not only `IOException`.
+
+### Step 7: THRASH, and the floor learned from paging
+
+- **Signal:** `\Memory\Pages Input/sec` through PDH in the sampler (`machine.pagesInPerSec`). Live: 800–4300 pages/s at 2–3 GB free on this machine.
+- **Histogram** (`pressure.json`, the scribe's to write, once a minute): available memory in bins of 1% of RAM against paging in power-of-two buckets; counts halve past 50,000 samples so old evidence fades.
+- **Floor** (`pressure.ts`): calm is the paging seen at or above the median available level; a bin below it is pressured when its median paging is above the calm p90; the floor is the top edge of the highest pressured bin with at least 22 samples. With no pressured bin yet, the policy floor (5% of RAM) stands. A set `minFreeGB` overrides both. The hover card and the pane say which applies and why.
+- **THRASH:** 3 pressured samples in a row below the floor, or (the original rule) under half the floor with no session progressing for 5 minutes. It settles with the same 2-sample hysteresis, refuses every local spawn (remote ones pass), turns the band red with a shaking marshaller, and toasts once per episode.

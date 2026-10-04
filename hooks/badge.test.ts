@@ -92,10 +92,11 @@ describe('band line', () => {
   test('the hover card: the machine, the asks, every session and the rest', () => {
     const lines = cardLines(at(1600)).map(text)
     expect(lines[0]).toBe('RAM 14.4 of 16.0 GB in use, 1.6 GB free, floor 1.5 GB')
-    expect(lines[1]).toBe('asks session 0.7 GB, subagent 0.3 GB → 0 sessions, 0 agents fit')
-    expect(lines).toContain('session           self child  agents')
-    expect(lines).toContain('x                  0.6   0.0  1  ← this')
+    expect(lines[1]).toBe('paging not read · floor: policy, 5% of RAM')
+    expect(lines[2]).toBe('asks session 0.7 GB, subagent 0.3 GB → 0 sessions, 0 agents fit')
+    expect(lines).toContain('GB                self child   ctr  agents')
+    expect(lines).toContain('x                  0.6   0.0   0.0  1  ← this')
     // 14.4 GB in use, 1.2 GB of it the two sessions
-    expect(lines[lines.length - 1]).toBe('everything else   13.3  desktop app, WSL, browsers…')
+    expect(lines[lines.length - 1]).toBe('everything else   13.3  browsers, system, the rest')
   })
 })

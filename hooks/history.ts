@@ -1,4 +1,4 @@
-import { POLICY, parseHistory, type AgentRecord, type HistoryRecord, type SessionRecord } from './forecast.ts'
+import { POLICY, RECORD_VERSION, parseHistory, type AgentRecord, type HistoryRecord, type SessionRecord } from './forecast.ts'
 import type { Io } from './io.ts'
 import type { Paths } from './paths.ts'
 
@@ -51,6 +51,7 @@ export const startTracker = () => {
       const growthMB = measured > 0 ? Math.max(0, a.peak - a.base) : 0
       return {
         kind: 'agent',
+        v: RECORD_VERSION,
         t: now,
         type: a.type,
         durationMs: now - a.t0,
@@ -62,7 +63,7 @@ export const startTracker = () => {
     },
     session(sessionId: string, now: number): SessionRecord | undefined {
       if (sessionSamples === 0) return undefined
-      return { kind: 'session', t: now, sessionId, peakSelfMB: peakSelf, peakChildMB: peakChild, samples: sessionSamples }
+      return { kind: 'session', v: RECORD_VERSION, t: now, sessionId, peakSelfMB: peakSelf, peakChildMB: peakChild, samples: sessionSamples }
     },
     inFlight: () => open.size,
   }

@@ -1,4 +1,5 @@
 import type { ClearancePane, ClearancePaneSession } from '../types'
+import { attributeContainers } from './checks.ts'
 import { census, floorMB, type GateOptions, type GateView } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 
@@ -11,8 +12,14 @@ const gb = (mb: number) => (mb / 1024).toFixed(1)
 /** The last two segments of a folder: `Code\clearance`. */
 export const shortPath = (path: string) => path.split(/[\\/]+/).filter(Boolean).slice(-2).join('\\')
 
-export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: string, isScribe: boolean, now: number): ClearancePane => {
+export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: string, isScribe: boolean, now: number, floorBasis = ''): ClearancePane => {
   const c = census(s)
+  const { bySession, unattributed } = attributeContainers(s)
+  const others: string[] = []
+  if (s.machine.pagesInPerSec !== undefined) others.push(`paging ${Math.round(s.machine.pagesInPerSec)} pages/s · floor ${floorBasis || 'policy'}`)
+  if (s.desktop) others.push(`desktop app ${gb(s.desktop.privateMB)} GB (${s.desktop.procs} processes)`)
+  if (s.dockerVm) others.push(`WSL/Docker VM ${gb(s.dockerVm.privateMB)} GB · containers ${gb(s.dockerVm.containersMB)} GB`)
+  for (const ctr of unattributed) others.push(`  unattributed container ${ctr.name} (${ctr.project ?? 'no project'}) ${gb(ctr.memMB)} GB`)
   const sessions: ClearancePaneSession[] = s.sessions
     .map(r => {
       const top = r.topChildren[0]
@@ -24,7 +31,7 @@ export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: strin
         children: r.children,
         agents: r.agentsInFlight ?? null,
         progressAgoS: r.lastProgressAt ? Math.max(0, Math.round((now - r.lastProgressAt) / 1000)) : null,
-        top: top ? `${top.name} ${gb(top.privateMB)}` : '',
+        top: [top ? `${top.name} ${gb(top.privateMB)}` : '', ...(bySession.get(r.sessionId) ?? []).map(ctr => `${ctr.name} ${gb(ctr.memMB)}`)].filter(Boolean).join(', '),
         isSelf: r.sessionId === me,
       }
     })
@@ -42,6 +49,7 @@ export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: strin
     agents: c.agents,
     reservedMB: c.reservedMB,
     sessions,
+    others,
   }
 }
 
@@ -58,9 +66,9 @@ export const paneLines = (m: ClearancePane | null, columns: number, now: number)
   if (!m) return [{ text: 'Waiting for the first machine sample…', tone: 'dim' }]
   const w = Math.max(40, columns)
   const out: PaneLine[] = []
-  const held = m.state === 'HOLD'
+  const held = m.state !== 'CLEARED'
   out.push({
-    text: held ? `HOLD · headroom ${gb(m.headroomMB)} GB` : `CLEARED · headroom ${gb(m.headroomMB)} GB · ${m.fits} more session${m.fits === 1 ? '' : 's'}`,
+    text: m.state === 'THRASH' ? `THRASH · every spawn refused` : held ? `HOLD · headroom ${gb(m.headroomMB)} GB` : `CLEARED · headroom ${gb(m.headroomMB)} GB · ${m.fits} more session${m.fits === 1 ? '' : 's'}`,
     tone: held ? 'warn' : 'ok',
   })
   for (const r of m.reasons) out.push({ text: `  ${r}`, tone: 'warn' })
@@ -97,6 +105,7 @@ export const paneLines = (m: ClearancePane | null, columns: number, now: number)
     })
   }
   out.push({ text: '', tone: 'plain' })
-  out.push({ text: 'GB, private bytes. * this session. "-": a session without clearance.', tone: 'dim' })
+  for (const line of m.others ?? []) out.push({ text: fit(line, w).trimEnd(), tone: 'dim' })
+  out.push({ text: fit('GB, private bytes. * this session. "-": a session without clearance. /clearance check: the convention checks.', w).trimEnd(), tone: 'dim' })
   return out
 }

@@ -1,6 +1,6 @@
 {
   "name": "clearance",
-  "version": "0.0.8",
+  "version": "0.1.0",
   "description": "Machine-wide resource clearance for Claude Code sessions and subagents: see the headroom, and get cleared, held or diverted before launching more.",
   "author": { "name": "wombraider" },
   "license": "MIT",
@@ -9,7 +9,7 @@
     "minFreeGB": {
       "type": "number",
       "title": "Available memory floor (GB)",
-      "description": "Available RAM (free plus standby) that must remain after admitting a session or subagent. 0 means 5% of this machine's RAM.",
+      "description": "Available RAM (free plus standby) that must remain after admitting a session or subagent. 0 means learned: where this machine was seen to start paging hard, and 5% of RAM until it has been. A positive value fixes it.",
       "default": 0
     },
     "maxCommitPct": {
