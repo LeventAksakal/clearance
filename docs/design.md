@@ -39,7 +39,7 @@ Every file has exactly one writer, so nothing needs a lock.
 |---|---|---|---|
 | `scribe/epoch-<n>` | the claimant that wins `CreateNew` | all | `{ sessionId, pid, at }` |
 | `snapshot.json` | sampler.ps1 (temp file + rename) | all sessions, leases mod, lane-supervisor | schema below |
-| `sessions/<sessionId>.json` | that session (the scribe deletes it an hour after the session left the registry: `$.fs` has no delete) | sampler | presence: `{ schema, sessionId, agentsInFlight, reservations, reservedMB, lastProgressAt, t }` |
+| `sessions/<sessionId>.json` | that session (the scribe deletes it an hour after the session left the registry: `$.fs` has no delete) | sampler | presence: `{ schema, sessionId, agentsInFlight, reservations, reservedMB, busy, lastProgressAt, t }` |
 | `history/<yyyy-mm>/<sessionId>.jsonl` | that session | forecaster | one record per finished subagent or session |
 | `logs/<sessionId>.log` | that session | people debugging | the last 200 election and sampler lines |
 
@@ -67,7 +67,7 @@ Every file has exactly one writer, so nothing needs a lock.
     "selfMB": 602, "childMB": 348, "children": 13,
     "topChildren": [{ "pid": 1, "name": "node.exe", "privateMB": 1812, "cmd": "vitest …" }],
     "containers": [{ "name": "ozu_aps_postgres", "project": "core", "memMB": 158 }],
-    "agentsInFlight": 2, "lastProgressAt": 1791036300000            // from presence
+    "agentsInFlight": 2, "busy": true, "lastProgressAt": 1791036300000  // from presence
   }],
   "unattributed": { "containers": [{ "name": "supabase_db_supabase", "project": "supabase", "memMB": 319 }] }
 }
@@ -78,7 +78,7 @@ Every file has exactly one writer, so nothing needs a lock.
 - `commitLimitMB` is read on every sample, because Windows grows the pagefile.
 - A container is attributed through its `com.docker.compose.project.working_dir` label to the session whose `cwd` contains that path. Without the label it lands in `unattributed`, and the convention checks name it.
 - **No machine verdict in schema 1 yet.** Each session runs `gate.ts` on the snapshot and adds its own reservations newer than the sample. The sampler has no thresholds, and the snapshot's one-writer rule keeps sessions from writing it; a `clearance` field moves in when a consumer (the leases mod) needs it.
-- `agentsInFlight`, `reservedMB` and `lastProgressAt` on a session row come from its presence file, and are absent for a session without the mod.
+- `agentsInFlight`, `reservedMB`, `busy` and `lastProgressAt` on a session row come from its presence file, and are absent for a session without the mod.
 
 ### The gate (pure functions, `gate.ts`)
 
@@ -95,7 +95,7 @@ The inputs are the snapshot, this session's reservations and the options:
 - **States:**
   - **CLEARED:** every limit holds after adding the forecast.
   - **HOLD:** some limit would break.
-  - **THRASH:** free memory is below half the floor **and** no session has made progress for 5 min. Progress is any tool result or file write recorded in presence.
+  - **THRASH:** free memory is below half the floor **and** no busy session has made progress for 5 min. Progress is any tool result recorded in presence, or a turn starting; a session is busy while a turn is in flight or a subagent runs. A session waiting for its person is idle, not stalled.
 - **THRASH effect:** the band turns red, every spawn is refused, and one toast fires per episode.
 - **Hysteresis:** a state must hold for 2 samples before it changes, so the status line doesn't flicker.
 - **Known gap:** two sessions can admit at the same moment and overshoot. Presence reservations narrow the window (a session records the reservation before it calls `next`), and the next sample corrects it. A ledger owned by the scribe is a v2 fix.
@@ -116,6 +116,7 @@ The inputs are the snapshot, this session's reservations and the options:
 | `classic.SubagentStart` | `additionalContext`: the agent's budget line (S3). |
 | `classic.SubagentStop` | The subagent is no longer in flight. Its reservation runs out on its own after 30 s, by when samples count the memory it brought. (History records: step 5.) |
 | `tool.call` (any, after `next`) | Bump `lastProgressAt` in presence, throttled to once per 15 s. |
+| `turn.start`, `turn.complete` (main loop) | Set and clear `busy` in presence; a turn start counts as progress. |
 | `tool.call` `mcp__clearance__headroom` | The census and forecast table as text (S2). |
 | `command.run` `clearance` | Open the pane. `/clearance check` runs the convention checks. |
 | `session.end` | Remove presence, resign if this session is scribe, flush history. |
@@ -290,4 +291,4 @@ Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too
 - **Signal:** `\Memory\Pages Input/sec` through PDH in the sampler (`machine.pagesInPerSec`). Live: 800–4300 pages/s at 2–3 GB free on this machine.
 - **Histogram** (`pressure.json`, the scribe's to write, once a minute): available memory in bins of 1% of RAM against paging in power-of-two buckets; counts halve past 50,000 samples so old evidence fades.
 - **Floor** (`pressure.ts`): calm is the paging seen at or above the median available level; a bin below it is pressured when its median paging is above the calm p90; the floor is the top edge of the highest pressured bin with at least 22 samples. With no pressured bin yet, the policy floor (5% of RAM) stands. A set `minFreeGB` overrides both. The hover card and the pane say which applies and why.
-- **THRASH:** 3 pressured samples in a row below the floor, or (the original rule) under half the floor with no session progressing for 5 minutes. It settles with the same 2-sample hysteresis, refuses every local spawn (remote ones pass), turns the band red with a shaking marshaller, and toasts once per episode.
+- **THRASH:** 3 pressured samples in a row below the floor, or (the original rule) under half the floor with no busy session progressing for 5 minutes (a session waiting for its person is idle, not stalled). It settles with the same 2-sample hysteresis, refuses every local spawn (remote ones pass), turns the band red with a shaking marshaller, and toasts once per episode.

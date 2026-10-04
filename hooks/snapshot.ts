@@ -35,6 +35,8 @@ export type SessionSample = {
   /** From the session's presence file; absent when it has none (a session without the mod). */
   agentsInFlight?: number
   reservedMB?: number
+  /** Working: a turn in flight or a subagent running. Absent from an older mod, which counts as idle. */
+  busy?: boolean
   lastProgressAt?: number
 }
 

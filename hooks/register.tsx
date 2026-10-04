@@ -5,7 +5,7 @@ import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAg
 import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
 import { checksReport, runChecks } from './checks.ts'
-import { emptyPressure, fold, isPressured, isThrash, learnFloor, parsePressure, STALL_MS, type Floor, type Pressure } from './pressure.ts'
+import { emptyPressure, fold, isPressured, isThrash, lastBusyProgress, learnFloor, parsePressure, STALL_MS, type Floor, type Pressure } from './pressure.ts'
 import { advance, floorMB, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
@@ -305,11 +305,10 @@ export const register: Register = (on, options) => {
           }
           ctx.pressuredRun = isPressured(pages, ctx.floor) ? ctx.pressuredRun + 1 : 0
           const floor = floorMB(opts, fresh.machine.totalMB)
-          const progress = Math.max(0, ...fresh.sessions.map(r => r.lastProgressAt ?? 0))
-          thrash = isThrash({ pressuredRun: ctx.pressuredRun, availableMB: fresh.machine.availableMB, floorMB: floor, lastProgressAt: progress || undefined, now })
+          thrash = isThrash({ pressuredRun: ctx.pressuredRun, availableMB: fresh.machine.availableMB, floorMB: floor, lastProgressAt: lastBusyProgress(fresh.sessions), now })
             ? ctx.pressuredRun >= 3
               ? `THRASH: paging ${Math.round(pages ?? 0)}/s (calm ≤ ${ctx.floor.calmP90}/s) with ${(fresh.machine.availableMB / 1024).toFixed(1)} GB free, under the ${(floor / 1024).toFixed(1)} GB floor`
-              : `THRASH: ${(fresh.machine.availableMB / 1024).toFixed(1)} GB free, under half the floor, and no session progressed for ${STALL_MS / 60_000} min`
+              : `THRASH: ${(fresh.machine.availableMB / 1024).toFixed(1)} GB free, under half the floor, and no busy session progressed for ${STALL_MS / 60_000} min`
             : undefined
           lastThrash = thrash
         }
@@ -449,6 +448,20 @@ export const register: Register = (on, options) => {
       return await next(e)
     } finally {
       if (id) ctx.remote.delete(id)
+    }
+  })
+
+  // Busy for the THRASH stall rule: a main-loop turn in flight (a subagent's
+  // runs raise no turn.start; its turns carry agentId and are left alone).
+  on('turn.start', async ($, e, next) => {
+    await ctx.presence?.turn(true)
+    return next(e)
+  })
+  on('turn.complete', async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      if (e.agentId === undefined) await ctx.presence?.turn(false)
     }
   })
 

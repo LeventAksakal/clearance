@@ -137,9 +137,19 @@ export const THRASH_RUN = 3
 export const STALL_MS = 5 * 60_000
 
 /**
+ * The stall clock: the latest progress among busy sessions, or undefined when
+ * none is busy. A session waiting for its person is idle, not stalled.
+ */
+export const lastBusyProgress = (sessions: readonly { busy?: boolean; lastProgressAt?: number }[]) => {
+  const busy = sessions.filter(r => r.busy === true && r.lastProgressAt !== undefined)
+  return busy.length ? Math.max(...busy.map(r => r.lastProgressAt!)) : undefined
+}
+
+/**
  * THRASH: the machine is paging hard below its floor for THRASH_RUN samples in
  * a row, or (the design's rule) available memory is under half the floor while
- * no session has made progress for STALL_MS.
+ * no busy session has made progress for STALL_MS (`lastProgressAt` from
+ * `lastBusyProgress`; undefined, nobody is working, never stalls).
  */
 export const isThrash = (args: { pressuredRun: number; availableMB: number; floorMB: number; lastProgressAt: number | undefined; now: number }) =>
   (args.pressuredRun >= THRASH_RUN && args.availableMB < args.floorMB) ||

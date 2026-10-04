@@ -228,6 +228,7 @@ function Get-Sessions($byPid, $kids) {
         $pr = [IO.File]::ReadAllText($presencePath) | ConvertFrom-Json
         $row.agentsInFlight = [int]$pr.agentsInFlight
         $row.reservedMB = [int]$pr.reservedMB
+        $row.busy = [bool]$pr.busy
         $row.lastProgressAt = [long]$pr.lastProgressAt
       } catch { }
     }

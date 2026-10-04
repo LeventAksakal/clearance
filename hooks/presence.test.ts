@@ -21,13 +21,14 @@ const settleMicrotasks = async () => {
 
 describe('presence', () => {
   test('the document sums its reservations for the sampler', () => {
-    const doc = presenceDoc('s', 2, [{ id: 'a', mb: 300, at: 1 }, { id: 'b', mb: 200, at: 2 }], 5, 6)
+    const doc = presenceDoc('s', 2, [{ id: 'a', mb: 300, at: 1 }, { id: 'b', mb: 200, at: 2 }], true, 5, 6)
     expect(doc).toEqual({
       schema: 1,
       sessionId: 's',
       agentsInFlight: 2,
       reservations: [{ id: 'a', mb: 300, at: 1 }, { id: 'b', mb: 200, at: 2 }],
       reservedMB: 500,
+      busy: true,
       lastProgressAt: 5,
       t: 6,
     })
@@ -52,5 +53,21 @@ describe('presence', () => {
     await settleMicrotasks()
     expect(f.writes).toHaveLength(2)
     expect(f.writes[1]?.doc.lastProgressAt).toBe(116_000)
+  })
+
+  test('busy while a turn is in flight or a subagent runs; a turn start is progress', async () => {
+    const f = fakeIo()
+    const p = startPresence(f.io, pathsFor('C:\\Users\\u'))
+    await p.flush()
+    expect(f.writes[0]?.doc.busy).toBe(false)
+    f.advance(60_000)
+    await p.turn(true)
+    expect(f.writes[1]?.doc).toMatchObject({ busy: true, lastProgressAt: 160_000 })
+    await p.reserve('t1', 300)
+    await p.started('t1', 'agent-1')
+    await p.turn(false)
+    expect(f.writes.at(-1)?.doc.busy).toBe(true)
+    await p.stopped('agent-1')
+    expect(f.writes.at(-1)?.doc.busy).toBe(false)
   })
 })

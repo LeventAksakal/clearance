@@ -8,7 +8,7 @@ import {
   unlabeledFindings,
 } from './checks.ts'
 import { DEFAULTS, advance, floorMB } from './gate.ts'
-import { BUCKETS, MAX_SAMPLES, bucketOf, emptyPressure, fold, isPressured, isThrash, learnFloor, parsePressure, type Pressure } from './pressure.ts'
+import { BUCKETS, MAX_SAMPLES, bucketOf, emptyPressure, fold, isPressured, isThrash, lastBusyProgress, learnFloor, parsePressure, type Pressure } from './pressure.ts'
 import type { Snapshot } from './snapshot.ts'
 
 const TOTAL = 16_000 // 160 MB bins
@@ -84,6 +84,13 @@ describe('THRASH', () => {
     expect(isThrash({ pressuredRun: 3, availableMB: 1100, floorMB: 1000, lastProgressAt: 0, now: 1 })).toBe(false)
     expect(isThrash({ pressuredRun: 0, availableMB: 400, floorMB: 1000, lastProgressAt: 0, now: 300_001 })).toBe(true)
     expect(isThrash({ pressuredRun: 0, availableMB: 400, floorMB: 1000, lastProgressAt: 10, now: 60_000 })).toBe(false)
+  })
+
+  test('the stall clock reads busy sessions only: an idle session is not stalled', () => {
+    expect(lastBusyProgress([{ busy: false, lastProgressAt: 10 }, { lastProgressAt: 20 }])).toBeUndefined()
+    expect(lastBusyProgress([{ busy: true, lastProgressAt: 10 }, { busy: false, lastProgressAt: 99 }, { busy: true, lastProgressAt: 30 }])).toBe(30)
+    // nobody working: under half the floor alone is not THRASH
+    expect(isThrash({ pressuredRun: 0, availableMB: 100, floorMB: 1000, lastProgressAt: lastBusyProgress([{ busy: false, lastProgressAt: 0 }]), now: 600_000 })).toBe(false)
   })
 
   test('settles with the same hysteresis and holds everything', () => {
