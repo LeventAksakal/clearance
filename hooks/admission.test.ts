@@ -70,7 +70,7 @@ describe('headroom tool', () => {
     const text = headroomReport(snap(4096), DEFAULTS, 0, { subagentType: 'Explore', count: 12 }, 12_000)
     expect(text).toContain('clearance census (sampled 2 s ago)')
     expect(text).toContain('aaaaaaaa | C:\\Code\\aaaaaaaa-1 | 0.6 | 0.2 | -')
-    expect(text).toContain('subagent Explore: forecast 0.3 GB; CLEARED; at most 8 now')
+    expect(text).toContain('subagent Explore: forecast 0.3 GB (prior); CLEARED; at most 8 now')
     expect(text).toContain('asked for 12 subagents: run 8 now and queue the rest')
   })
 

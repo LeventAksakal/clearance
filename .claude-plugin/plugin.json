@@ -1,6 +1,6 @@
 {
   "name": "clearance",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Machine-wide resource clearance for Claude Code sessions and subagents: see the headroom, and get cleared, held or diverted before launching more.",
   "author": { "name": "wombraider" },
   "license": "MIT",

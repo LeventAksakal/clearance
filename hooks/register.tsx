@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
 import { badgeLine, badgeModel, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
-import { DIALOG, budgetLine, decideSpawn, divertSteps, forecastMB, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
+import { AGENT_DEFAULT_MB, DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
+import { forecastAgent, forecastSession, type Forecast } from './forecast.ts'
+import { startHistory, startTracker, type History, type Tracker } from './history.ts'
 import { advance, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
@@ -75,6 +77,32 @@ type Ctx = {
   footerDrawn: boolean
   /** Agent calls with `isolation: "remote"`, by tool_use_id: they run in the cloud, so the gate lets them through. */
   remote: Set<string>
+  /** Remote subagents by agentId: their growth isn't this machine's, so the tracker skips them. */
+  remoteAgents: Set<string>
+  history: History | undefined
+  tracker: Tracker | undefined
+  /** The session baseline from the options: the prior the learned session forecast shrinks toward. */
+  priorSessionMB: number
+}
+
+/** Every session's history reread from disk this often, to learn from the others. */
+const HISTORY_RELOAD_MS = 10 * 60_000
+/** This session's peaks written at most this often (they only grow). */
+const SESSION_WRITE_MS = 60_000
+
+/** The learned forecast for one more subagent of `type`, or the prior without history. */
+const agentForecast = (ctx: Ctx, type: string, now: number): Forecast =>
+  ctx.history ? forecastAgent(ctx.history.records(), type, AGENT_DEFAULT_MB, now) : { mb: AGENT_DEFAULT_MB, n: 0, source: 'prior' }
+
+const basis = (f: Forecast) =>
+  f.source === 'prior'
+    ? 'prior, no history yet'
+    : `learned from ${f.n} ${f.source === 'type' ? 'runs of this type' : 'subagent runs'}, p90+15% ${((f.learnedMB ?? 0) / 1024).toFixed(2)} GB`
+
+/** The session baseline the gate uses: learned from every session's peaks, the option as the prior. */
+const relearnSession = (ctx: Ctx, now: number) => {
+  if (!ctx.history) return
+  ctx.opts.sessionBaselineGB = forecastSession(ctx.history.records(), ctx.priorSessionMB, now).mb / 1024
 }
 
 
@@ -119,10 +147,40 @@ const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
 
 export const register: Register = (on, options) => {
   const opts = gateOptions(options)
-  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '', footerDrawn: false, remote: new Set() }
+  const ctx: Ctx = {
+    opts,
+    presence: undefined,
+    io: undefined,
+    latest: undefined,
+    sessionId: '',
+    footerDrawn: false,
+    remote: new Set(),
+    remoteAgents: new Set(),
+    history: undefined,
+    tracker: undefined,
+    priorSessionMB: opts.sessionBaselineGB * 1024,
+  }
+  let sessionWrittenAt = 0
+  let historyLoadedAt = 0
   let scribe: Scribe | undefined
   let view: GateView | undefined
   let shownBadge = 'null'
+
+  /** Writes this session's peaks as they grow, and rereads every session's history now and then. */
+  const keepHistory = async (now: number) => {
+    const history = ctx.history
+    if (!history || !ctx.tracker) return
+    if (now - sessionWrittenAt >= SESSION_WRITE_MS) {
+      sessionWrittenAt = now
+      const r = ctx.tracker.session(ctx.sessionId, now)
+      if (r) await history.setSession(r)
+    }
+    if (now - historyLoadedAt >= HISTORY_RELOAD_MS) {
+      historyLoadedAt = now
+      await history.reload()
+      relearnSession(ctx, now)
+    }
+  }
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -139,6 +197,19 @@ export const register: Register = (on, options) => {
     ctx.io = sessionIo
     ctx.presence = presence
     await presence.flush()
+    const startedAt = await $.clock.now()
+    ctx.tracker = startTracker()
+    try {
+      ctx.history = await startHistory(sessionIo, paths, ctx.sessionId, startedAt)
+      historyLoadedAt = startedAt
+      relearnSession(ctx, startedAt)
+      const f = agentForecast(ctx, 'general-purpose', startedAt)
+      sessionIo.log(
+        `history: ${ctx.history.records().length} records; subagent ${f.mb} MB (${basis(f)}); session ${Math.round(opts.sessionBaselineGB * 1024)} MB`,
+      )
+    } catch (err) {
+      sessionIo.log(`history: ${String(err)}`)
+    }
     await $.command.register({ name: 'clearance', description: "Show this machine's sessions, their memory and the headroom in a pane" })
     await $.tool.register({
       name: 'headroom',
@@ -163,7 +234,12 @@ export const register: Register = (on, options) => {
         const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now) : null
         void update($, pane, () => model)
         $.ui.status(ctx.footerDrawn ? undefined : statusLine(snapshot, now, view?.shown))
-        const agent = fresh ? gate(fresh, opts, { kind: 'agent', mb: forecastMB('general-purpose') }, presence.reservedSince(fresh.t, now)) : undefined
+        const own = fresh?.sessions.find(r => r.sessionId === ctx.sessionId)
+        if (fresh && own) ctx.tracker?.sample(own, fresh.t)
+        void keepHistory(now).catch(err => sessionIo.log(`history: ${String(err)}`))
+        const agent = fresh
+          ? gate(fresh, opts, { kind: 'agent', mb: agentForecast(ctx, 'general-purpose', now).mb }, presence.reservedSince(fresh.t, now))
+          : undefined
         const shown = badgeModel(snapshot, now, view, agent)
         const key = JSON.stringify(shown)
         if (key !== shownBadge) {
@@ -184,12 +260,14 @@ export const register: Register = (on, options) => {
     const presence = ctx.presence
     if (ctx.remote.delete(e.tool_use_id)) {
       ctx.io?.log(`spawn cleared, remote: ${e.subagentType} "${e.description}"`)
-      return next(e)
+      const result = await next(e)
+      if (result.agentId) ctx.remoteAgents.add(result.agentId)
+      return result
     }
     if (!presence) return next(e)
     const now = await $.clock.now()
     const s = await current($, ctx, now)
-    const mb = forecastMB(e.subagentType)
+    const mb = agentForecast(ctx, e.subagentType, now).mb
     const decision = decideSpawn(s, opts, e.subagentType, mb, s ? presence.reservedSince(s.t, now) : 0)
     if (!decision.allow) {
       ctx.io?.log(`spawn denied: ${e.subagentType} "${e.description}": ${decision.verdict.reasons.join('; ')}`)
@@ -209,12 +287,26 @@ export const register: Register = (on, options) => {
   // Every subagent learns its budget (S3).
   on('classic.SubagentStart', async ($, e, next) => {
     const result = await next(e)
-    const line = budgetLine(await current($, ctx, await $.clock.now()), opts, e.agent_type, forecastMB(e.agent_type))
+    const now = await $.clock.now()
+    if (!ctx.remoteAgents.has(e.agent_id)) ctx.tracker?.started(e.agent_id, e.agent_type, now)
+    const line = budgetLine(await current($, ctx, now), opts, e.agent_type, agentForecast(ctx, e.agent_type, now).mb)
     return { ...result, additionalContext: [...(result.additionalContext ?? []), line] }
   })
 
+  // A finished subagent: in flight no more, and one more record to learn from.
   on('classic.SubagentStop', async ($, e, next) => {
     await ctx.presence?.stopped(e.agent_id)
+    ctx.remoteAgents.delete(e.agent_id)
+    const now = await $.clock.now()
+    const record = ctx.tracker?.stopped(e.agent_id, now)
+    if (record && ctx.history) {
+      await ctx.history.addAgent(record)
+      const f = agentForecast(ctx, record.type, now)
+      ctx.io?.log(
+        `history: ${record.type} ran ${Math.round(record.durationMs / 1000)} s, grew ${record.growthMB} MB over ${record.samples} samples ` +
+          `(${record.concurrent} at once, cost ${record.costMB} MB); forecast now ${f.mb} MB (${basis(f)})`,
+      )
+    }
     return next(e)
   })
 
@@ -228,7 +320,11 @@ export const register: Register = (on, options) => {
       subagentType: typeof args.subagentType === 'string' && args.subagentType ? args.subagentType : undefined,
       count: typeof args.count === 'number' && args.count > 0 ? Math.floor(args.count) : undefined,
     }
-    return { result: headroomReport(s, opts, s && ctx.presence ? ctx.presence.reservedSince(s.t, now) : 0, ask, now) }
+    const mbFor = (type: string) => {
+      const f = agentForecast(ctx, type, now)
+      return { mb: f.mb, basis: basis(f) }
+    }
+    return { result: headroomReport(s, opts, s && ctx.presence ? ctx.presence.reservedSince(s.t, now) : 0, ask, now, mbFor) }
   })
 
   // A remote Agent call is the divert the gate recommends: note it, so its

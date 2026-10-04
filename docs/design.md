@@ -240,3 +240,22 @@ Each step is validated, tested and committed on its own.
 - **Accuracy:** `scripts/verify.ps1` rereads the machine through performance counters (PDH) and rebuilds each session's tree through `Get-Process .Parent`. Against a 1.6 s old snapshot: available 2178 vs 2107 MB, commit 36770 vs 36821 MB, commit limit equal; per session, the census was within −86…+12 MB of the verified private bytes, no unreadable processes. Differences are drift between the two reads.
 - **What the session table leaves out** (headroom already includes it, since it is machine-wide): the Claude desktop app's own processes (~1.9 GB private), the WSL VM `vmmemWSL` (5.2 GB private; step 6), and orphaned dev-server trees whose launching shell exited (`vite-plus` node, ~2.5 GB). The last is a new finding: a step-6 `unattributed` row should list orphaned node trees under a dead Claude shell.
 - **Not yet proven:** the 0.3 GB subagent forecast. Subagents run inside the session process, so their cost is the session's growth while they run; step 5's history measures that and replaces the constant.
+
+### Step 5: history and forecast
+
+Research (2026-10-04, done inline: clearance held local subagents at the time, so the survey ran in this conversation as its own denial advised):
+
+- **Kubernetes VPA** recommender defaults (`pkg/recommender/config/config.go`): memory target p90, bounds p50 and p95, safety margin 15%, minimum 250 MB, memory aggregated as per-interval peaks (8 intervals), OOM bump ×1.2 or at least 100 MB, a confidence interval of 24 h that widens the bounds while history is short.
+- **Google Autopilot** (EuroSys 2020): memory recommended from peaks, not averages, since memory is stable over short spans and a shortfall is costly; the plain peak for jobs that tolerate no OOMs, p98 for low tolerance, p60 for intermediate; exponentially decayed samples, 48 h half-life; new jobs are sized cautiously.
+
+The model (`hooks/forecast.ts`, pure):
+
+- **Signal, subagents:** a subagent runs inside its session's process, so its cost is the session tree's peak (self + children, from the snapshot row) above its value when the subagent started, split evenly among the subagents that overlapped it (`hooks/history.ts`, the tracker). A run shorter than one sample (5 s) is recorded with `samples: 0` and not used. The main loop's own growth during the run is counted too: the estimate leans high, which is the safe side.
+- **Signal, sessions:** each session's peak self and peak children, one record rewritten as they grow (every 60 s at most).
+- **Estimate:** a time-decayed weighted quantile (half-life 3 days, between VPA's 24 h and Autopilot's 48 h, since a laptop sees far fewer runs a day) plus 15%. Subagents: p90 per `subagentType`; a type with fewer than 3 records uses the pool of every type. Sessions: p90 of the peak self plus the median of the peak children (the MCP servers every session starts; a median ignores the odd dev server).
+- **Cold start:** the learned value is shrunk toward the prior by the effective sample count, `w = nEff / (nEff + 5)`. The priors are 0.3 GB per subagent and the `sessionBaselineGB` option per session. A missing history means the priors, never a block.
+- **Store:** `history/<yyyy-mm>/<sessionId>.jsonl`, one writer per file; every session reads the last two months (records older than 60 days dropped) at start and every 10 minutes. A hot reload reads its own file back, so a record survives it.
+- **Wiring:** the learned subagent forecast replaces the constant in the spawn gate, the reservation, the budget line, the headroom tool (which now says what the forecast is based on), and the footer's verdict. The learned session forecast replaces `sessionBaselineGB` in the gate; the option stays as its prior.
+- **Remote subagents** (`isolation: "remote"`): noted at the Agent `tool.call` (its arguments sit beside `tool`), passed through the spawn gate, and skipped by the tracker, since their cost isn't this machine's.
+
+Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too low (THRASH right after a cleared spawn).
