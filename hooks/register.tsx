@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
-import { badgeLine, badgeModel, TONE_COLOR } from './badge.ts'
+import type { ElementTable, EngineInterface, Register } from 'claude-code'
+import { badgeLine, badgeModel, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
 import { DIALOG, budgetLine, decideSpawn, divertSteps, forecastMB, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { advance, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
@@ -71,7 +71,12 @@ type Ctx = {
   latest: Snapshot | undefined
   /** This session's id as of the last session.start (the pane marks its row). */
   sessionId: string
+  /** The footer chip has been drawn (desktop): the status line then stays empty, not repeating it. */
+  footerDrawn: boolean
 }
+
+/** The footer's scale: 16 × 13 sprite pixels → 24 × 19.5 CSS px, a footer row's height. */
+const FOOTER_SCALE = 1.5
 
 /** The latest snapshot if still fresh, with this session's subagents counted as they are now. */
 async function current($: EngineInterface, ctx: Ctx, now: number): Promise<Snapshot | undefined> {
@@ -103,9 +108,17 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
   $.ui.toast(`clearance: cleared, ${(headroomMB / 1024).toFixed(1)} GB headroom`)
 }
 
+/** A line's runs as nested Texts, colored by tone. */
+const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
+  line.map((r, i) => (
+    <Text key={`r${i}`} color={r.tone ? TONE_COLOR[r.tone] : undefined} bold={r.strong} dimColor={r.dim}>
+      {r.text}
+    </Text>
+  ))
+
 export const register: Register = (on, options) => {
   const opts = gateOptions(options)
-  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '' }
+  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '', footerDrawn: false }
   let scribe: Scribe | undefined
   let view: GateView | undefined
   let shownBadge = 'null'
@@ -148,8 +161,9 @@ export const register: Register = (on, options) => {
         view = fresh ? advance(view, fresh, opts, presence.reservedSince(fresh.t, now)) : undefined
         const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now) : null
         void update($, pane, () => model)
-        $.ui.status(statusLine(snapshot, now, view?.shown))
-        const shown = badgeModel(snapshot, now, view)
+        $.ui.status(ctx.footerDrawn ? undefined : statusLine(snapshot, now, view?.shown))
+        const agent = fresh ? gate(fresh, opts, { kind: 'agent', mb: forecastMB('general-purpose') }, presence.reservedSince(fresh.t, now)) : undefined
+        const shown = badgeModel(snapshot, now, view, agent)
         const key = JSON.stringify(shown)
         if (key !== shownBadge) {
           shownBadge = key
@@ -238,6 +252,30 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The footer chip, live: the marshaller, a RAM bar and what fits, beside the
+  // model and effort labels. Another plugin's band can't hide it there.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    if (e.surface === 'terminal') return next(e)
+    const t = $.ui.resolve(e)
+    if (!('Svg' in t)) return next(e)
+    ctx.footerDrawn = true
+    const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
+    const { Box, Text } = t
+    return (
+      <Box flexDirection="row" alignItems="center" columnGap={1}>
+        {e.props.modes.length > 0 ? <Text dimColor>{e.props.modes.join(' & ')}</Text> : null}
+        <t.Svg
+          source={spriteSvg(b.mood, FOOTER_SCALE)}
+          alt={`clearance: ${b.mood.toLowerCase()}`}
+          width={16 * FOOTER_SCALE}
+          height={13 * FOOTER_SCALE}
+          isInteractive
+        />
+        <Text wrap="truncate-end">{runs(Text, footerLine(b))}</Text>
+      </Box>
+    )
+  })
+
   // The badge, always up. It yields to a survey and keeps a band another
   // plugin draws beneath it, stacked above its own line.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -260,11 +298,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
         {sprite}
         <Text wrap="truncate-end">
-          {badgeLine(b, e.props.bodyColumns - 8).map((r, i) => (
-            <Text key={`r${i}`} color={r.tone ? TONE_COLOR[r.tone] : undefined} bold={r.strong} dimColor={r.dim}>
-              {r.text}
-            </Text>
-          ))}
+          {runs(Text, badgeLine(b, e.props.bodyColumns - 8))}
         </Text>
       </Box>
     )

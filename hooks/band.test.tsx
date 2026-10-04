@@ -44,3 +44,22 @@ describe('badge band', () => {
     await ui.unmount()
   })
 })
+
+describe('footer chip', () => {
+  test('keeps the mode labels, adds the marshaller and the live line on the desktop, passes on the terminal', async ($, on) => {
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>engine modes</Text>
+    })
+    const props = { modes: ['focus'] } as never
+    const desktop = await $.ui.mount({ plugin: 'clearance', component: 'SessionMode', surface: 'desktop', props })
+    const drawn = JSON.stringify(await desktop.drawn())
+    expect(drawn).toContain('"type":"Svg"')
+    expect(drawn).toContain('focus')
+    expect(drawn).toContain('waiting for a snapshot')
+    await desktop.unmount()
+    const terminal = await $.ui.mount({ plugin: 'clearance', component: 'SessionMode', surface: 'terminal', props })
+    expect(await terminal.find({ type: 'Text', text: 'engine modes' })).toBeDefined()
+    await terminal.unmount()
+  })
+})

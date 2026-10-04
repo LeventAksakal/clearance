@@ -135,7 +135,7 @@ const paths = (rows: readonly string[], palette: Record<string, string>): string
 export const SCALE = 2
 
 /** The mood's twelve frames as one SVG; SMIL shows one frame at a time, looping. */
-export const spriteSvg = (mood: Mood): string => {
+export const spriteSvg = (mood: Mood, scale = SCALE): string => {
   const palette = PALETTE[mood]
   const dur = `${(PACE[mood] * FRAMES) / 1000}s`
   const groups = Array.from({ length: FRAMES }, (_, i) => {
@@ -148,7 +148,7 @@ export const spriteSvg = (mood: Mood): string => {
     )
   })
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W * SCALE}" height="${H * SCALE}" shape-rendering="crispEdges">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W * scale}" height="${H * scale}" shape-rendering="crispEdges">` +
     groups.join('') +
     `</svg>`
   )

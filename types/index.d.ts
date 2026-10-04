@@ -8,6 +8,12 @@ export type ClearanceBadge = {
   headroomMB: number | null
   /** More sessions that fit now. */
   fits: number
+  /** More general-purpose subagents that fit now (their forecast is smaller than a session's). */
+  agentFits: number
+  /** RAM in use, percent of total, and what is available (free plus standby); 0 while WAITING. */
+  usedPct: number
+  availableMB: number
+  totalMB: number
   sessions: number
   agents: number
   /** Why it holds; empty unless HOLD. */

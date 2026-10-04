@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { badgeLine, badgeModel } from './badge.ts'
-import { DEFAULTS, advance } from './gate.ts'
+import { badgeLine, badgeModel, footerLine } from './badge.ts'
+import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
 
@@ -62,18 +62,35 @@ describe('badge', () => {
 
   test('cleared: headroom, room for more, the census', () => {
     const s = snap(8000, 3)
-    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS))
-    expect(b).toMatchObject({ mood: 'CLEARED', sessions: 3, agents: 3 })
-    expect(text(badgeLine(b, 120))).toBe('Cleared  6.3 GB headroom  room for 3 more sessions  · 3 sessions, 3 agents')
+    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+    expect(b).toMatchObject({ mood: 'CLEARED', sessions: 3, agents: 3, usedPct: 51, availableMB: 7987.2 })
+    expect(text(badgeLine(b, 120))).toBe('Cleared  6.3 GB headroom  room for 3 more sessions, 5 subagents  · 3 sessions, 3 agents')
     expect(text(badgeLine(b, 40))).toBe('Cleared  6.3 GB headroom')
   })
 
   test('hold: the reasons, and where to divert on a wide band', () => {
     const s = snap(1024)
-    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS))
+    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
     expect(b.mood).toBe('HOLD')
-    expect(text(badgeLine(b, 120))).toContain('Hold  0.0 GB headroom  available 1.0 GB, floor 1.5 GB')
+    expect(text(badgeLine(b, 120))).toContain('Hold new sessions  0.0 GB headroom  · no subagents fit  available 1.0 GB, floor 1.5 GB')
     expect(text(badgeLine(b, 120))).toContain('divert')
     expect(text(badgeLine(b, 70))).not.toContain('divert')
+  })
+})
+
+describe('footer', () => {
+  test('a RAM bar, what is free, and a verdict for sessions and for subagents', () => {
+    const s = snap(2048 + 600)
+    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+    // 1.1 GB over the 1.5 GB floor: one 0.7 GB session fits, or three 0.3 GB subagents.
+    expect(b.mood).toBe('CLEARED')
+    expect(text(footerLine(b))).toBe('▰▰▰▰▰▰▰▱ 84% · 2.6 GB free · sessions +1 · agents +3')
+    const held = snap(1700)
+    const h = badgeModel(held, 2_000, advance(undefined, held, DEFAULTS), gate(held, DEFAULTS, { kind: 'agent', mb: 300 }))
+    expect(text(footerLine(h))).toBe('▰▰▰▰▰▰▰▱ 90% · 1.7 GB free · sessions hold · agents hold')
+  })
+
+  test('waits without numbers', () => {
+    expect(text(footerLine(badgeModel(undefined, 0, undefined)))).toBe('clearance waiting for a snapshot')
   })
 })
