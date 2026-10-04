@@ -52,15 +52,13 @@ describe('freshness and fencing', () => {
 })
 
 describe('statusLine', () => {
-  test('shows live machine numbers', () => {
-    expect(statusLine(snap, 101_000, false)).toBe('clearance · avail 2.1 GB · commit 32.5/47.5 GB · 0 sessions')
-    expect(statusLine({ ...snap, sessions: [{} as never] }, 101_000, true)).toBe(
-      'clearance · avail 2.1 GB · commit 32.5/47.5 GB · 1 session · scribe',
-    )
+  test('shows the settled state, the headroom and how many more sessions fit', () => {
+    expect(statusLine(snap, 101_000, { state: 'CLEARED', headroomMB: 3174, fits: 2 })).toBe('clearance ✓ 3.1 GB · 2 more')
+    expect(statusLine(snap, 101_000, { state: 'HOLD', headroomMB: 410, fits: 0 })).toBe('clearance ■ HOLD 0.4 GB')
   })
 
   test('says when there are no live numbers', () => {
-    expect(statusLine(undefined, 0, false)).toBe('clearance · waiting for a snapshot')
-    expect(statusLine(snap, 130_000, false)).toBe('clearance · snapshot 30 s old')
+    expect(statusLine(undefined, 0, undefined)).toBe('clearance · waiting for a snapshot')
+    expect(statusLine(snap, 130_000, { state: 'CLEARED', headroomMB: 1, fits: 0 })).toBe('clearance · snapshot 30 s old')
   })
 })

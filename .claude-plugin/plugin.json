@@ -1,7 +1,40 @@
 {
   "name": "clearance",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Machine-wide resource clearance for Claude Code sessions and subagents: see the headroom, and get cleared, held or diverted before launching more.",
   "author": { "name": "wombraider" },
-  "license": "MIT"
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "minFreeGB": {
+      "type": "number",
+      "title": "Available memory floor (GB)",
+      "description": "Available RAM (free plus standby) that must remain after admitting a session or subagent.",
+      "default": 1.5
+    },
+    "maxCommitPct": {
+      "type": "number",
+      "title": "Commit ceiling (%)",
+      "description": "Committed memory as a share of the commit limit, after admitting.",
+      "default": 90
+    },
+    "maxSessions": {
+      "type": "number",
+      "title": "Session ceiling",
+      "description": "Most local Claude sessions at once.",
+      "default": 6
+    },
+    "maxAgents": {
+      "type": "number",
+      "title": "Subagent ceiling",
+      "description": "Most subagents in flight across the machine.",
+      "default": 8
+    },
+    "sessionBaselineGB": {
+      "type": "number",
+      "title": "New session cost (GB)",
+      "description": "What a new session is assumed to cost until history learns it.",
+      "default": 0.7
+    }
+  }
 }

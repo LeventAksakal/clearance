@@ -1,3 +1,5 @@
+import type { GateState } from './gate.ts'
+
 // snapshot.json, schema 1: the contract other mods read (0005). The scribe's
 // sampler writes it; every session reads it. Pure: no `$` here.
 
@@ -25,6 +27,10 @@ export type SessionSample = {
   childMB: number
   children: number
   topChildren: ChildSample[]
+  /** From the session's presence file; absent when it has none (a session without the mod). */
+  agentsInFlight?: number
+  reservedMB?: number
+  lastProgressAt?: number
 }
 
 export type Snapshot = {
@@ -97,12 +103,13 @@ export const isCurrent = (s: Snapshot, epochs: Epochs) => epochs.highest === und
 
 const gb = (mb: number) => (mb / 1024).toFixed(1)
 
-/** The status line for step 1: live machine numbers, or why there are none. */
-export const statusLine = (s: Snapshot | undefined, now: number, isScribe: boolean): string => {
-  const role = isScribe ? ' · scribe' : ''
-  if (!s) return `clearance · waiting for a snapshot${role}`
-  if (!isFresh(s, now)) return `clearance · snapshot ${Math.round(ageMs(s, now) / 1000)} s old${role}`
-  const m = s.machine
-  const n = s.sessions.length
-  return `clearance · avail ${gb(m.availableMB)} GB · commit ${gb(m.commitMB)}/${gb(m.commitLimitMB)} GB · ${n} session${n === 1 ? '' : 's'}${role}`
+/** What the status line shows for a fresh snapshot: the settled state, the headroom and how many more sessions fit. */
+export type Shown = { state: GateState; headroomMB: number; fits: number }
+
+/** The status line: `clearance ✓ 3.1 GB · 2 more`, `clearance ■ HOLD 0.4 GB`, or why there are no numbers. */
+export const statusLine = (s: Snapshot | undefined, now: number, shown: Shown | undefined): string => {
+  if (!s || !shown) return 'clearance · waiting for a snapshot'
+  if (!isFresh(s, now)) return `clearance · snapshot ${Math.round(ageMs(s, now) / 1000)} s old`
+  if (shown.state === 'HOLD') return `clearance ■ HOLD ${gb(shown.headroomMB)} GB`
+  return `clearance ✓ ${gb(shown.headroomMB)} GB · ${shown.fits} more`
 }

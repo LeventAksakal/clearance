@@ -1,3 +1,4 @@
+import type { Io } from './io.ts'
 import { epochFile, registryFile, resignedFile, type Paths } from './paths.ts'
 import { STALE_INTERVALS, isCurrent, parseBeat, parseEpochs, parseSnapshot, type Snapshot } from './snapshot.ts'
 
@@ -20,23 +21,6 @@ export type Holder = {
 
 /** Who this session is. The pid and procStart survive a /clear; the session id does not. */
 export type Self = { sessionId: string; pid: number; procStart: string }
-
-/**
- * The scribe's reach, built by register.ts from `$` (the validator follows `$`
- * only within one file). Tests hand in a fake.
- */
-export type Io = {
-  now: () => Promise<number>
-  sessionId: () => Promise<string>
-  list: (dir: string) => Promise<{ name: string; kind: string }[]>
-  read: (path: string) => Promise<string>
-  write: (path: string, text: string) => Promise<void>
-  mtime: (path: string) => Promise<number>
-  run: (argv: string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr: string }>
-  spawn: (argv: string[]) => AsyncGenerator<{ stream: 'stdout' | 'stderr'; text: string }, unknown>
-  every: (ms: number, fn: () => void) => { cancel: () => void }
-  log: (text: string) => void
-}
 
 export const parseHolder = (text: string): Holder | undefined => {
   try {

@@ -17,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 
 $scribeDir = Join-Path $Root 'scribe'
 $snapPath = Join-Path $Root 'snapshot.json'
+$presenceDir = Join-Path $Root 'sessions'
 $tmpPath = Join-Path $Root "snapshot.$PID.tmp"
 $utf8 = [Text.UTF8Encoding]::new($false)
 # Win32 directly, not CIM: under some hosts (the CLI's spawn) pwsh is denied
@@ -140,7 +141,7 @@ function Get-Sessions($byPid, $kids) {
     $top = $desc | Sort-Object PrivateBytes -Descending | Select-Object -First 3 | ForEach-Object {
       [ordered]@{ pid = $_.Pid; name = $_.Name; privateMB = (MB $_.PrivateBytes) }
     }
-    [ordered]@{
+    $row = [ordered]@{
       sessionId   = $r.sessionId
       pid         = $sessionPid
       cwd         = $r.cwd
@@ -150,6 +151,29 @@ function Get-Sessions($byPid, $kids) {
       children    = $desc.Count
       topChildren = @($top)
     }
+    # The session's presence file, written by its clearance mod (absent without the mod).
+    $presencePath = Join-Path $presenceDir "$($r.sessionId).json"
+    if ([IO.File]::Exists($presencePath)) {
+      try {
+        $pr = [IO.File]::ReadAllText($presencePath) | ConvertFrom-Json
+        $row.agentsInFlight = [int]$pr.agentsInFlight
+        $row.reservedMB = [int]$pr.reservedMB
+        $row.lastProgressAt = [long]$pr.lastProgressAt
+      } catch { }
+    }
+    $script:live.Add([string]$r.sessionId) | Out-Null
+    $row
+  }
+}
+
+# Presence files of sessions that left the registry over an hour ago are the
+# current scribe's to delete (their writers can't: $.fs has no delete).
+function Remove-OldPresence {
+  if (-not [IO.Directory]::Exists($presenceDir)) { return }
+  $cutoff = [DateTime]::UtcNow.AddHours(-1)
+  foreach ($f in [IO.Directory]::EnumerateFiles($presenceDir, '*.json')) {
+    $id = [IO.Path]::GetFileNameWithoutExtension($f)
+    if (-not $script:live.Contains($id) -and [IO.File]::GetLastWriteTimeUtc($f) -lt $cutoff) { [IO.File]::Delete($f) }
   }
 }
 
@@ -168,6 +192,7 @@ while ($true) {
       $kids[$pp].Add($p)
     }
     if (-not $byPid.ContainsKey($owner)) { exit 0 }   # the scribe's session is gone
+    $script:live = [Collections.Generic.HashSet[string]]::new()
     $sessions = @(Get-Sessions $byPid $kids)
     $sw.Stop()
     $t = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -198,7 +223,7 @@ while ($true) {
     }
     [Console]::Out.WriteLine("{""t"":$t,""ms"":$($sw.ElapsedMilliseconds),""sessions"":$($sessions.Count)}")
     [Console]::Out.Flush()
-    if ($tick % 60 -eq 1) { Remove-OldEpochs }
+    if ($tick % 60 -eq 1) { Remove-OldEpochs; Remove-OldPresence }
   } catch {
     $msg = "sample failed: $($_.Exception.Message)"
     if (-not $reported) {
