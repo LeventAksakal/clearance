@@ -1,5 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
+import { badgeLine, badgeModel, TONE_COLOR } from './badge.ts'
 import { DIALOG, budgetLine, decideSpawn, divertSteps, forecastMB, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { advance, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
@@ -8,13 +9,15 @@ import { pathsFor } from './paths.ts'
 import { startPresence, type Presence } from './presence.ts'
 import { startScribe, type Scribe } from './scribe.ts'
 import { isFresh, statusLine, type Snapshot } from './snapshot.ts'
+import { H, SCALE, spriteSvg, W } from './sprite.ts'
 
 // Wiring only: hooks to modules. Step 1: the scribe election and the sampler.
 // Step 2: presence, the gate, the status line's states and the HOLD band.
 // Step 3: admission: the spawn gate, each subagent's budget line, the
 // headroom tool and the session-start dialog. Step 4: the /clearance pane.
+// The band: an always-up badge, the marshaller sprite and one line.
 
-const band = atom({ plugin: 'clearance', key: 'band' } as const, null)
+const badge = atom({ plugin: 'clearance', key: 'badge' } as const, null)
 const pane = atom({ plugin: 'clearance', key: 'pane' } as const, null)
 const startChecked = atom({ plugin: 'clearance', key: 'startChecked' } as const, false)
 const waitingForClearance = atom({ plugin: 'clearance', key: 'waitingForClearance' } as const, false)
@@ -105,7 +108,7 @@ export const register: Register = (on, options) => {
   const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '' }
   let scribe: Scribe | undefined
   let view: GateView | undefined
-  let shownBand = 'null'
+  let shownBadge = 'null'
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -146,11 +149,11 @@ export const register: Register = (on, options) => {
         const model = fresh && view ? paneModel(fresh, view, opts, ctx.sessionId, isScribe, now) : null
         void update($, pane, () => model)
         $.ui.status(statusLine(snapshot, now, view?.shown))
-        const held = view?.band ?? null
-        const key = JSON.stringify(held)
-        if (key !== shownBand) {
-          shownBand = key
-          void update($, band, () => held)
+        const shown = badgeModel(snapshot, now, view)
+        const key = JSON.stringify(shown)
+        if (key !== shownBadge) {
+          shownBadge = key
+          void update($, badge, () => shown)
         }
         if (!fresh) return
         void checkStart($, ctx, fresh).catch(err => sessionIo.log(`session-start check: ${String(err)}`))
@@ -235,18 +238,41 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // The badge, always up. It yields to a survey and keeps a band another
+  // plugin draws beneath it, stacked above its own line.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const held = await read($, band)
-    if (!held || e.props.hasSurvey) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
-    return (
-      <Box>
-        <Text color="yellow" bold>
-          clearance HOLD{' '}
+    if (e.props.hasSurvey) return next(e)
+    const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
+    const below = await next(e)
+    const t = $.ui.resolve(e)
+    const { Box, Text } = t
+    const tone = b.mood === 'CLEARED' ? 'ok' : b.mood === 'HOLD' ? 'warn' : 'idle'
+    const sprite =
+      // The terminal's table stands a fragment in for Svg; it gets a glyph.
+      e.surface !== 'terminal' && 'Svg' in t ? (
+        <t.Svg source={spriteSvg(b.mood)} alt={`clearance: ${b.mood.toLowerCase()}`} width={W * SCALE} height={H * SCALE} isInteractive />
+      ) : (
+        <Text color={TONE_COLOR[tone]} bold>
+          {b.mood === 'CLEARED' ? '✓' : b.mood === 'HOLD' ? '■' : '·'}
         </Text>
+      )
+    const ours = (
+      <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
+        {sprite}
         <Text wrap="truncate-end">
-          {held.reasons.join('; ')} · new sessions: divert to a cloud session, Remote Control or ssh, or wait
+          {badgeLine(b, e.props.bodyColumns - 8).map((r, i) => (
+            <Text key={`r${i}`} color={r.tone ? TONE_COLOR[r.tone] : undefined} bold={r.strong} dimColor={r.dim}>
+              {r.text}
+            </Text>
+          ))}
         </Text>
+      </Box>
+    )
+    if (below.type === 'engine') return ours
+    return (
+      <Box flexDirection="column">
+        {below}
+        {ours}
       </Box>
     )
   })

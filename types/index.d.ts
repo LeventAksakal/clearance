@@ -1,5 +1,20 @@
-/** What the AbovePrompt band draws while the machine is on HOLD; null hides it. */
+/** The gate view's HOLD reasons (the badge and the pane show them); null while cleared. */
 export type ClearanceBand = { state: 'HOLD'; headroomMB: number; reasons: string[] }
+
+/** The band's badge, always up: the marshaller's mood and the line beside it. */
+export type ClearanceBadge = {
+  mood: 'CLEARED' | 'HOLD' | 'WAITING'
+  /** Rounded to 0.1 GB; null while WAITING. */
+  headroomMB: number | null
+  /** More sessions that fit now. */
+  fits: number
+  sessions: number
+  agents: number
+  /** Why it holds; empty unless HOLD. */
+  reasons: string[]
+  /** Why there are no numbers while WAITING; empty otherwise. */
+  note: string
+}
 
 /** One session row of the /clearance pane. */
 export type ClearancePaneSession = {
@@ -37,7 +52,7 @@ export type ClearancePane = {
 declare module 'claude-code' {
   interface PluginState {
     clearance: {
-      band: ClearanceBand | null
+      badge: ClearanceBadge | null
       pane: ClearancePane | null
       /** The session-start check ran (once per session, not again on a hot reload). */
       startChecked: boolean

@@ -123,7 +123,7 @@ The inputs are the snapshot, this session's reservations and the options:
 ### UI
 
 - **Status line**, always: `clearance ✓ 3.1 GB · 2 more` / `clearance ■ HOLD 0.4 GB` / `clearance ▲ THRASH`.
-- **AbovePrompt band**, only on HOLD or THRASH: one line with the reason and the offload options.
+- **AbovePrompt band**, always up (changed after step 4, at the owner's ask for something as noticeable as token-weather): a 12-frame pixel marshaller and one line. CLEARED waves green paddles (headroom, room for more, census); HOLD crosses amber paddles overhead (headroom, reasons, divert options on a wide band); WAITING dozes grey (no or stale snapshot). THRASH will get its own mood in step 7.
 - **Pane `/clearance`:**
   - a machine row;
   - a table per session (session, worktree, self, children, containers, agents, last progress);
@@ -222,3 +222,11 @@ Each step is validated, tested and committed on its own.
 
 - **Divert actions in v0.1:** copyable steps only, or also use the Desktop app's own "move to cloud" when the session runs there? Proposal: steps only, because a mod can't call the app's tools.
 - **Threshold defaults:** the table above is a guess from one day of measurements. Tune them after a week of history.
+
+### Badge (after step 4)
+
+- **Band** (`AbovePrompt`) draws `$.state` `clearance.badge`, rebuilt each tick and written only when it changes (headroom rounded to 0.1 GB), so the sprite isn't redrawn every sample.
+- **Sprite:** `hooks/sprite.ts` draws 16 × 13 pixel frames procedurally, 12 per mood, and packs them into one SVG; each frame is a `<g>` whose `visibility` a discrete SMIL `<animate>` flips. The desktop draws it with `Svg isInteractive` (SMIL runs only in the sandboxed frame, not in image mode), 32 × 26 CSS px. No timer or blit on our side; about 8 KB per mood.
+- **Terminal:** its element table stands a fragment in for `Svg`, so the band gates on `e.surface` and draws a colored glyph (✓ ■ ·) there. A `Raster` sprite would need 7 rows at half-blocks, too tall for a one-line band.
+- **Sharing the band:** the band is one instance, so the hook calls `next(e)` and stacks another plugin's tree (token-weather's) above its own line; an engine answer (`type: 'engine'`) means nobody else drew. A plugin above clearance that doesn't call `next` still hides it.
+- **Tests:** the kit's `find` doesn't index `Svg` leaves; the test reads `drawn()`.

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-// The test engine has no `$.state`, so the HOLD drawing is checked live; this
-// covers the band staying out of the way, on both surfaces.
+// The test engine has no `$.state`, so the band draws the WAITING badge here;
+// the CLEARED and HOLD lines are covered in badge.test.ts and checked live.
 
 const BAND = {
   plugin: 'clearance',
@@ -9,17 +9,38 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } as never,
 } as const
 
-describe('HOLD band', () => {
-  test('stays out of the way while cleared', async ($, on) => {
+describe('badge band', () => {
+  test('is always up, and keeps a band drawn beneath it', async ($, on) => {
     on('ui.render', ($, e) => {
       const { Text } = $.ui.resolve(e)
       return <Text>engine band</Text>
     })
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ ...BAND, surface })
-      expect(await ui.find({ type: 'Text', text: /clearance HOLD/ })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: 'Clearance' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'engine band' })).toBeDefined()
       await ui.unmount()
     }
+  })
+
+  test('draws the marshaller where the surface has Svg', async ($, on) => {
+    on('ui.render', () => ({ type: 'engine', ref: 'AbovePrompt' }) as never)
+    const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
+    // The kit's `find` doesn't index Svg leaves; the drawn tree has it.
+    expect(JSON.stringify(await desktop.drawn())).toContain('"type":"Svg"')
+    await desktop.unmount()
+    const terminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await terminal.find({ type: 'Text', text: '·' })).toBeDefined()
+    await terminal.unmount()
+  })
+
+  test('yields to a survey', async ($, on) => {
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>survey</Text>
+    })
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop', props: { hasSurvey: true, isWorking: false, maxRows: 10, bodyColumns: 120 } as never })
+    expect(await ui.find({ type: 'Text', text: 'Clearance' })).toBeUndefined()
+    await ui.unmount()
   })
 })
