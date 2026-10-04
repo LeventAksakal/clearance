@@ -1,6 +1,6 @@
 # clearance
 
-> Status: **pre-release**. Build steps 1–4 of 7 work: the shared snapshot, the scribe election, presence, the gate with its status line and HOLD band, and admission (spawn gate, subagent budget, headroom tool, session-start dialog), and the `/clearance` pane; nothing is released yet.
+> Status: **pre-release**. Build steps 1–4 of 7 work: the shared snapshot, the scribe election, presence, the gate with its status line and HOLD band, admission (spawn gate, subagent budget, headroom tool, session-start dialog) and the `/clearance` pane; nothing is released yet.
 
 A Claude Code mod that makes every session on a machine aware of the machine's resources and of the other sessions:
 
