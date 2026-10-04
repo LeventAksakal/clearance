@@ -1,7 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
-import type { ClearanceBadge } from '../types'
-import { badgeLine, badgeModel, cardLines, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
+import { bandLine, badgeModel, cardLines, light, LIGHT_COLOR, TONE_COLOR, type BadgeRun } from './badge.ts'
 import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
@@ -74,10 +73,8 @@ type Ctx = {
   latest: Snapshot | undefined
   /** This session's id as of the last session.start (the pane marks its row). */
   sessionId: string
-  /** The chip has been drawn (desktop): the status line then stays empty, not repeating it. */
+  /** The band has been drawn on the desktop: the status line then stays empty, not repeating it. */
   footerDrawn: boolean
-  /** The hint line has drawn the chip: the footer's mode labels then go back to the engine. */
-  hintDrawn: boolean
   /** Agent calls with `isolation: "remote"`, by tool_use_id: they run in the cloud, so the gate lets them through. */
   remote: Set<string>
   /** Remote subagents by agentId: their growth isn't this machine's, so the tracker skips them. */
@@ -89,6 +86,9 @@ type Ctx = {
   /** The person fixed the session cost in the options; otherwise it is learned. */
   sessionFixed: boolean
 }
+
+/** Samples in the band's RAM sparkline: 10 × 5 s, the last 50 s. */
+const TRAIL = 10
 
 /** Every session's history reread from disk this often, to learn from the others. */
 const HISTORY_RELOAD_MS = 10 * 60_000
@@ -140,34 +140,6 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
   $.ui.toast(`clearance: cleared, ${(headroomMB / 1024).toFixed(1)} GB headroom`)
 }
 
-/** The chip: its line, and a card shown above it while the pointer is on it. */
-const chip = (t: ElementTable, b: ClearanceBadge, key: string) => {
-  const card = cardLines(b)
-  return (
-    <t.Box key={key} flexDirection="row">
-      <t.Text wrap="truncate-end">{runs(t.Text, footerLine(b))}</t.Text>
-      <t.Box
-        position="absolute"
-        bottom={1}
-        left={0}
-        display="none"
-        hover={{ display: 'flex' }}
-        flexDirection="column"
-        borderStyle="round"
-        borderDimColor
-        backgroundColor="#1b1b1b"
-        paddingX={1}
-      >
-        {card.map((line, i) => (
-          <t.Text key={`c${i}`} wrap="truncate-end">
-            {runs(t.Text, line)}
-          </t.Text>
-        ))}
-      </t.Box>
-    </t.Box>
-  )
-}
-
 /** A line's runs as nested Texts, colored by tone. */
 const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
   line.map((r, i) => (
@@ -185,7 +157,6 @@ export const register: Register = (on, options) => {
     latest: undefined,
     sessionId: '',
     footerDrawn: false,
-    hintDrawn: false,
     remote: new Set(),
     remoteAgents: new Set(),
     history: undefined,
@@ -194,6 +165,9 @@ export const register: Register = (on, options) => {
     sessionFixed: opts.sessionBaselineGB > 0,
   }
   let sessionWrittenAt = 0
+  /** RAM in use, percent, one per sample: the band's sparkline. */
+  const ramTrail: number[] = []
+  let trailT = -1
   let historyLoadedAt = 0
   let scribe: Scribe | undefined
   let view: GateView | undefined
@@ -269,6 +243,11 @@ export const register: Register = (on, options) => {
         $.ui.status(ctx.footerDrawn ? undefined : statusLine(snapshot, now, view?.shown))
         const own = fresh?.sessions.find(r => r.sessionId === ctx.sessionId)
         if (fresh && own) ctx.tracker?.sample(own, fresh.t)
+        if (fresh && fresh.t !== trailT) {
+          trailT = fresh.t
+          ramTrail.push(Math.round(((fresh.machine.totalMB - fresh.machine.availableMB) / fresh.machine.totalMB) * 100))
+          if (ramTrail.length > TRAIL) ramTrail.shift()
+        }
         if (fresh) {
           ctx.growth.observe(fresh.sessions, fresh.t)
           relearnSession(ctx, now)
@@ -282,6 +261,7 @@ export const register: Register = (on, options) => {
           floorMB: floorMB(opts, fresh?.machine.totalMB ?? 0),
           agentAskMB: agentForecast(ctx, 'general-purpose', now).mb,
           sessionAskMB: opts.sessionBaselineGB * 1024,
+          ramTrail: [...ramTrail],
         })
         const key = JSON.stringify(shown)
         if (key !== shownBadge) {
@@ -408,64 +388,39 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The chip, live: one traffic-light line beside the prompt, and on hover a
-  // card with the machine and every session's use. It sits in the hint line by
-  // "Auto" where there is room, and in the footer's mode labels only until the
-  // hint line has drawn it. Another plugin's band can't hide either.
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    if (e.surface === 'terminal') return next(e)
-    ctx.footerDrawn = true
-    if (!ctx.hintDrawn) {
-      ctx.hintDrawn = true
-      $.ui.invalidate('ui.render')
-    }
-    const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
-    const t = $.ui.resolve(e)
-    return (
-      <t.Box flexDirection="row" columnGap={2}>
-        {e.props.hint ? <t.Text dimColor>{e.props.hint}</t.Text> : null}
-        {chip(t, b, 'chip-hint')}
-      </t.Box>
-    )
-  })
-
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    if (e.surface === 'terminal' || ctx.hintDrawn) return next(e)
-    ctx.footerDrawn = true
-    const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
-    const t = $.ui.resolve(e)
-    return (
-      <t.Box flexDirection="row" columnGap={1}>
-        {e.props.modes.length > 0 ? <t.Text dimColor>{e.props.modes.join(' & ')}</t.Text> : null}
-        {chip(t, b, 'chip-modes')}
-      </t.Box>
-    )
-  })
-
-  // The badge, always up. It yields to a survey and keeps a band another
-  // plugin draws beneath it, stacked above its own line.
+  // The band, always up: the marshaller in the tier's color and one dense line;
+  // hovering it opens the machine and every session's use above the line. It
+  // yields to a survey and keeps a band another plugin draws beneath it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
     const below = await next(e)
     const t = $.ui.resolve(e)
     const { Box, Text } = t
-    const tone = b.mood === 'CLEARED' ? 'ok' : b.mood === 'HOLD' ? 'warn' : 'idle'
+    const tier = light(b)
+    if (e.surface !== 'terminal') ctx.footerDrawn = true
     const sprite =
       // The terminal's table stands a fragment in for Svg; it gets a glyph.
       e.surface !== 'terminal' && 'Svg' in t ? (
-        <t.Svg source={spriteSvg(b.mood)} alt={`clearance: ${b.mood.toLowerCase()}`} width={W * SCALE} height={H * SCALE} isInteractive />
+        <t.Svg source={spriteSvg(tier)} alt={`clearance: ${tier}`} width={W * SCALE} height={H * SCALE} isInteractive />
       ) : (
-        <Text color={TONE_COLOR[tone]} bold>
-          {b.mood === 'CLEARED' ? '✓' : b.mood === 'HOLD' ? '■' : '·'}
+        <Text color={LIGHT_COLOR[tier]} bold>
+          ●
         </Text>
       )
     const ours = (
-      <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
-        {sprite}
-        <Text wrap="truncate-end">
-          {runs(Text, badgeLine(b, e.props.bodyColumns - 8))}
-        </Text>
+      <Box key="clearance-band" flexDirection="column" paddingX={1}>
+        <Box display="none" hover={{ display: 'flex' }} flexDirection="column" marginBottom={1}>
+          {cardLines(b).map((line, i) => (
+            <Text key={`c${i}`} wrap="truncate-end">
+              {runs(Text, line)}
+            </Text>
+          ))}
+        </Box>
+        <Box flexDirection="row" alignItems="center" columnGap={1}>
+          {sprite}
+          <Text wrap="truncate-end">{runs(Text, bandLine(b))}</Text>
+        </Box>
       </Box>
     )
     if (below.type === 'engine') return ours

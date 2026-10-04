@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { badgeLine, badgeModel, cardLines, footerLine, light } from './badge.ts'
+import { bandLine, badgeModel, cardLines, light } from './badge.ts'
 import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
@@ -30,7 +30,7 @@ const text = (runs: { text: string }[]) => runs.map(r => r.text).join('')
 
 describe('sprite', () => {
   test('every mood has twelve frames of the sprite size', () => {
-    for (const mood of ['CLEARED', 'HOLD', 'WAITING'] as const) {
+    for (const mood of ['green', 'yellow', 'red', 'grey'] as const) {
       const frames = Array.from({ length: FRAMES }, (_, i) => frame(mood, i))
       expect(frames.length).toBe(12)
       for (const f of frames) {
@@ -43,7 +43,7 @@ describe('sprite', () => {
   })
 
   test('the SVG flips its frames with discrete SMIL and fits the Svg element', () => {
-    for (const mood of ['CLEARED', 'HOLD', 'WAITING'] as const) {
+    for (const mood of ['green', 'yellow', 'red', 'grey'] as const) {
       const svg = spriteSvg(mood)
       expect(svg.startsWith('<svg')).toBe(true)
       expect(svg.length).toBeLessThan(131_072)
@@ -62,25 +62,9 @@ describe('badge', () => {
     expect(badgeModel(s, 61_000, view)).toMatchObject({ mood: 'WAITING', note: 'snapshot 60 s old' })
   })
 
-  test('cleared: headroom, room for more, the census', () => {
-    const s = snap(8000, 3)
-    const b = badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }))
-    expect(b).toMatchObject({ mood: 'CLEARED', sessions: 3, agents: 3, usedPct: 51, availableMB: 7987.2 })
-    expect(text(badgeLine(b, 120))).toBe('Cleared  6.3 GB headroom  room for 3 more sessions, 5 subagents  · 3 sessions, 3 agents')
-    expect(text(badgeLine(b, 40))).toBe('Cleared  6.3 GB headroom')
-  })
-
-  test('hold: the reasons, and where to divert on a wide band', () => {
-    const s = snap(1024)
-    const b = badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }))
-    expect(b.mood).toBe('HOLD')
-    expect(text(badgeLine(b, 120))).toContain('Hold new sessions  0.0 GB headroom  · no subagents fit  available 1.0 GB, floor 1.5 GB')
-    expect(text(badgeLine(b, 120))).toContain('divert')
-    expect(text(badgeLine(b, 70))).not.toContain('divert')
-  })
 })
 
-describe('chip', () => {
+describe('band line', () => {
   const at = (availableMB: number) => {
     const s = snap(availableMB)
     return badgeModel(s, 2_000, advance(undefined, s, FIXED), gate(s, FIXED, { kind: 'agent', mb: 300 }), {
@@ -91,22 +75,18 @@ describe('chip', () => {
     })
   }
 
-  test('green while a session fits', () => {
-    const b = at(2048 + 600) // 1.1 GB over the 1.5 GB floor: one 0.7 GB session, or three 0.3 GB subagents
+  test('green: sessions and subagents that fit, the RAM trail, use and free', () => {
+    const b = { ...at(2048 + 600), ramTrail: [40, 62, 84] }
     expect(light(b)).toBe('green')
-    expect(text(footerLine(b))).toBe('● cleared: 1 session, 3 agents · RAM 84%')
+    expect(text(bandLine(b))).toBe('● cleared 1s·3a  RAM ▄▅▇ 84%  2.6 GB free')
   })
 
-  test('yellow when only subagents fit', () => {
-    const b = at(1536 + 400)
-    expect(light(b)).toBe('yellow')
-    expect(text(footerLine(b))).toBe('● cleared: 1 agent, no session · RAM 88%')
-  })
-
-  test('red says why: what is free against the floor', () => {
+  test('yellow: subagents only; red: hold, with the floor', () => {
+    expect(light(at(1536 + 400))).toBe('yellow')
+    expect(text(bandLine(at(1536 + 400)))).toBe('● cleared 0s·1a  RAM █ 88%  1.9 GB free')
     expect(light(at(1600))).toBe('red')
-    expect(text(footerLine(at(1600)))).toBe('● hold: 1.6 GB free, floor 1.5 · RAM 90%')
-    expect(text(footerLine(badgeModel(undefined, 0, undefined)))).toBe('● clearance waiting for a snapshot')
+    expect(text(bandLine(at(1600)))).toBe('● hold 0s·0a  RAM █ 90%  1.6 GB free, floor 1.5')
+    expect(text(bandLine(badgeModel(undefined, 0, undefined)))).toBe('● clearance  waiting for a snapshot')
   })
 
   test('the hover card: the machine, the asks, every session and the rest', () => {

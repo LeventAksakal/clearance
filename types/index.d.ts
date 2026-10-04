@@ -39,6 +39,8 @@ export type ClearanceBadge = {
   rows: ClearanceBadgeRow[]
   /** RAM in use that no session owns: the desktop app, WSL, browsers, the rest of the machine. */
   otherMB: number
+  /** RAM in use, percent, over the last samples, oldest first: the band's sparkline. */
+  ramTrail: number[]
 }
 
 /** One session row of the /clearance pane. */

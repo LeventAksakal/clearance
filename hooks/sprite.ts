@@ -1,9 +1,11 @@
-// The band's mascot: a pixel marshaller who waves you on, holds you back or
-// dozes while there is no snapshot. Twelve frames per mood, drawn as one SVG
+// The band's mascot: a pixel marshaller in the traffic-light color of what can
+// start: green waves both paddles (a session fits), yellow waves one (only
+// subagents fit), red crosses them overhead (nothing fits), grey dozes (no
+// snapshot). Twelve frames per mood, drawn as one SVG
 // whose SMIL animation flips the frames, so the surface animates it with no
 // timer or redraw here. Pure: no `$` here.
 
-export type Mood = 'CLEARED' | 'HOLD' | 'WAITING'
+export type Mood = 'green' | 'yellow' | 'red' | 'grey'
 
 export const W = 16
 export const H = 13
@@ -14,13 +16,14 @@ type Frame = { left: Pose; right: Pose; bob: 0 | 1; dx: -1 | 0 | 1; blink: boole
 
 /** Colors by role; `p` is the paddles, `l` the lamp lit, `m` the lamp dim. */
 const PALETTE: Record<Mood, Record<string, string>> = {
-  CLEARED: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#3fb950', l: '#7ee787', m: '#2ea043' },
-  HOLD: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#f0a020', l: '#ff6b5b', m: '#6e2a24' },
-  WAITING: { b: '#64748b', s: '#475569', e: '#0b1020', p: '#94a3b8', l: '#94a3b8', m: '#475569', z: '#cbd5e1' },
+  green: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#3fb950', l: '#7ee787', m: '#2ea043' },
+  yellow: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#e3b341', l: '#f8d66d', m: '#9e6a03' },
+  red: { b: '#4c6ef5', s: '#3b5bdb', e: '#0b1020', p: '#f85149', l: '#ff7b72', m: '#6e2a24' },
+  grey: { b: '#64748b', s: '#475569', e: '#0b1020', p: '#94a3b8', l: '#94a3b8', m: '#475569', z: '#cbd5e1' },
 }
 
 /** Milliseconds per frame. */
-const PACE: Record<Mood, number> = { CLEARED: 110, HOLD: 120, WAITING: 220 }
+const PACE: Record<Mood, number> = { green: 110, yellow: 150, red: 120, grey: 220 }
 
 const seq = <T>(xs: readonly T[]): T[] => {
   if (xs.length !== FRAMES) throw new Error(`a mood needs ${FRAMES} frames, got ${xs.length}`)
@@ -38,11 +41,16 @@ const SCRIPT: Record<Mood, Frame[]> = (() => {
     const dx = seq([0, 0, 1, 1, 0, 0, -1, -1, 0, 0, 0, 0] as const)
     return dx.map((d, i): Frame => ({ left: 'cross', right: 'cross', bob: 0, dx: d, blink: i === 10, lamp: i % 4 < 2 ? 'on' : 'dim', z: -1 }))
   }
+  const oneArm = () => {
+    const L: Pose[] = seq(['up', 'high', 'high', 'up', 'mid', 'mid', 'up', 'high', 'high', 'up', 'mid', 'mid'])
+    const bob = seq([0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0] as const)
+    return L.map((left, i): Frame => ({ left, right: 'down', bob: bob[i]!, dx: 0, blink: i === 5, lamp: i % 6 < 3 ? 'on' : 'dim', z: -1 }))
+  }
   const waiting = () => {
     const bob = seq([0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1] as const)
     return bob.map((b, i): Frame => ({ left: 'down', right: 'down', bob: b, dx: 0, blink: true, lamp: 'dim', z: i < 8 ? i : -1 }))
   }
-  return { CLEARED: cleared(), HOLD: hold(), WAITING: waiting() }
+  return { green: cleared(), yellow: oneArm(), red: hold(), grey: waiting() }
 })()
 
 /** One frame as rows of palette keys, `.` transparent. */

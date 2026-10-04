@@ -25,10 +25,11 @@ const waiting = (note: string): ClearanceBadge => ({
   sessionAskMB: 0,
   rows: [],
   otherMB: 0,
+  ramTrail: [],
 })
 
 /** What the chip needs beyond the snapshot: this session, and the gate's floor and asks. */
-export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number }
+export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number; ramTrail?: number[] }
 
 /** Rounded to what the lines show (0.1 GB), so a few MB of drift doesn't redraw them. */
 const tenth = (mb: number) => (Math.round(mb / 102.4) * 1024) / 10
@@ -73,6 +74,7 @@ export const badgeModel = (
       }))
       .sort((a, b) => b.selfMB + b.childMB - (a.selfMB + a.childMB)),
     otherMB: tenth(Math.max(0, m.totalMB - m.availableMB - s.sessions.reduce((sum, r) => sum + r.selfMB + r.childMB, 0))),
+    ramTrail: at.ramTrail ?? [],
   }
 }
 
@@ -82,27 +84,6 @@ export type BadgeTone = 'ok' | 'warn' | 'idle'
 export type BadgeRun = { text: string; tone?: BadgeTone; color?: string; strong?: boolean; dim?: boolean }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-
-/** The line beside the sprite, cut to fit `columns` (the sprite takes its own width before it). */
-export const badgeLine = (b: ClearanceBadge, columns: number): BadgeRun[] => {
-  if (b.mood === 'WAITING') return [{ text: 'Clearance', tone: 'idle', strong: true }, { text: `  ${b.note}`, dim: true }]
-  const head = gb(b.headroomMB ?? 0)
-  const census = `${plural(b.sessions, 'session')}, ${plural(b.agents, 'agent')}`
-  if (b.mood === 'HOLD') {
-    const runs: BadgeRun[] = [
-      { text: 'Hold', tone: 'warn', strong: true },
-      { text: ` new sessions  ${head} GB headroom` },
-      { text: b.agentFits > 0 ? `  · ${plural(b.agentFits, 'subagent')} still fit` : '  · no subagents fit', dim: true },
-    ]
-    if (columns >= 60) runs.push({ text: `  ${b.reasons.join('; ')}`, dim: true })
-    if (columns >= 100) runs.push({ text: '  · divert: cloud session, Remote Control or ssh', dim: true })
-    return runs
-  }
-  const runs: BadgeRun[] = [{ text: 'Cleared', tone: 'ok', strong: true }, { text: `  ${head} GB headroom` }]
-  if (columns >= 50) runs.push({ text: `  room for ${plural(b.fits, 'more session')}, ${plural(b.agentFits, 'subagent')}`, dim: true })
-  if (columns >= 80) runs.push({ text: `  · ${census}`, dim: true })
-  return runs
-}
 
 /** Text colors by tone, matching the sprite's paddles. */
 export const TONE_COLOR: Record<BadgeTone, string> = { ok: '#3fb950', warn: '#f0a020', idle: '#94a3b8' }
@@ -115,21 +96,6 @@ export const light = (b: ClearanceBadge): Light =>
   b.mood === 'WAITING' ? 'grey' : b.mood === 'CLEARED' && b.fits > 0 ? 'green' : b.agentFits > 0 ? 'yellow' : 'red'
 
 export const LIGHT_COLOR: Record<Light, string> = { green: '#3fb950', yellow: '#e3b341', red: '#f85149', grey: '#94a3b8' }
-
-/**
- * The chip's line: the colored head says what can start, or why nothing can;
- * the RAM figure follows. Dense, so it shows whole beside the prompt.
- */
-export const footerLine = (b: ClearanceBadge): BadgeRun[] => {
-  const tier = light(b)
-  const head = (text: string): BadgeRun => ({ text, color: LIGHT_COLOR[tier], strong: true })
-  if (tier === 'grey') return [head('● clearance'), { text: ` ${b.note}`, dim: true }]
-  const ram = { text: ` · RAM ${b.usedPct}%`, dim: true }
-  if (tier === 'green') return [head(`● cleared: ${plural(b.fits, 'session')}, ${plural(b.agentFits, 'agent')}`), ram]
-  if (tier === 'yellow') return [head(`● cleared: ${plural(b.agentFits, 'agent')}`), { text: ', no session', color: LIGHT_COLOR.yellow }, ram]
-  const short = b.availableMB - b.floorMB < b.agentAskMB
-  return [head('● hold: '), { text: short ? `${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)}` : b.reasons[0] ?? 'nothing fits', color: LIGHT_COLOR.red }, ram]
-}
 
 const col = (text: string, width: number) => (text.length > width ? text.slice(0, width - 1) + '…' : text.padEnd(width))
 const num = (mb: number) => gb(mb).padStart(5)
@@ -157,3 +123,27 @@ export const cardLines = (b: ClearanceBadge): BadgeRun[][] => {
   return lines
 }
 
+const SPARK = '▁▂▃▄▅▆▇█'
+
+/** RAM in use as a sparkline, scaled 0–100%, so its height reads as how full the machine is. */
+export const sparkline = (pcts: readonly number[]) =>
+  pcts.map(p => SPARK[Math.min(SPARK.length - 1, Math.max(0, Math.floor((p / 100) * SPARK.length)))]).join('')
+
+/**
+ * The band's one dense line, beside the marshaller: the verdict in its tier's
+ * color (`2s·6a`: sessions and subagents that fit), the RAM trail, use, free.
+ */
+export const bandLine = (b: ClearanceBadge): BadgeRun[] => {
+  const tier = light(b)
+  const color = LIGHT_COLOR[tier]
+  if (tier === 'grey') return [{ text: '● clearance', color, strong: true }, { text: `  ${b.note}`, dim: true }]
+  const verdict = tier === 'red' ? '● hold' : '● cleared'
+  return [
+    { text: verdict, color, strong: true },
+    { text: ` ${b.fits}s·${b.agentFits}a`, color },
+    { text: '  RAM ', dim: true },
+    { text: sparkline(b.ramTrail.length ? b.ramTrail : [b.usedPct]), color },
+    { text: ` ${b.usedPct}%` },
+    { text: tier === 'red' ? `  ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)}` : `  ${gb(b.availableMB)} GB free`, dim: tier !== 'red', color: tier === 'red' ? color : undefined },
+  ]
+}

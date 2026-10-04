@@ -268,3 +268,10 @@ Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too
 - **Sessions:** the same bound over recorded session peaks (self + children) plus every live session's size now, so it is observed from the first sample. `sessionBaselineGB` defaults to 0 (learned); a positive value fixes it.
 - **What remains a number is policy, not a size:** the quantile and confidence (0.9 / 0.9), the 60-day retention, the floor (5% of RAM), the commit ceiling and the count ceilings. The floor is next to become empirical: learn the available-memory level where this machine starts paging hard (step 7's pressure counters).
 - **Known ways the census can still understate** (an Explore subagent's audit of `sampler.ps1`, 2026-10-04): orphaned descendants whose parent exited are not reached (`sampler.ps1:126-139`); private bytes miss shared sections, mapped files and kernel pool (`:80`); a failed read counts as 0 (`:80`); a 5 s point sample misses short peaks; registry rows that fail to parse drop out (`:122`, `:125`). Headroom is machine-wide and unaffected; the per-session rows and the subagent costs are.
+
+### Band, final shape (owner's choices, 2026-10-04)
+
+- **token-weather disabled** (user scope) so clearance owns the band; the footer chip and the hint-line chip are gone. The desktop footer draws text only and cut the line at about 22 characters; the hint line isn't drawn on the desktop.
+- **One dense line**, chosen from three mockups: `[marshaller] ● cleared 2s·6a  RAM ▁▂▃▅▆▇ 82%  2.8 GB free` (sessions·agents that fit; a 10-sample RAM sparkline, 50 s). Red reads `● hold 0s·0a … 1.4 GB free, floor 0.8`.
+- **Marshaller by tier:** green waves both paddles, yellow waves one (only subagents fit), red crosses them overhead, grey dozes.
+- **Hover** expands the band upward with the card: RAM and floor, the forecasts and what fits, hold reasons, every session's self/child/agents, and everything else.
