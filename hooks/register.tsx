@@ -73,6 +73,8 @@ type Ctx = {
   sessionId: string
   /** The footer chip has been drawn (desktop): the status line then stays empty, not repeating it. */
   footerDrawn: boolean
+  /** Agent calls with `isolation: "remote"`, by tool_use_id: they run in the cloud, so the gate lets them through. */
+  remote: Set<string>
 }
 
 
@@ -117,7 +119,7 @@ const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
 
 export const register: Register = (on, options) => {
   const opts = gateOptions(options)
-  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '', footerDrawn: false }
+  const ctx: Ctx = { opts, presence: undefined, io: undefined, latest: undefined, sessionId: '', footerDrawn: false, remote: new Set() }
   let scribe: Scribe | undefined
   let view: GateView | undefined
   let shownBadge = 'null'
@@ -180,6 +182,10 @@ export const register: Register = (on, options) => {
   // under it the memory is reserved before the spawn runs.
   on('agent.spawn', async ($, e, next) => {
     const presence = ctx.presence
+    if (ctx.remote.delete(e.tool_use_id)) {
+      ctx.io?.log(`spawn cleared, remote: ${e.subagentType} "${e.description}"`)
+      return next(e)
+    }
     if (!presence) return next(e)
     const now = await $.clock.now()
     const s = await current($, ctx, now)
@@ -223,6 +229,19 @@ export const register: Register = (on, options) => {
       count: typeof args.count === 'number' && args.count > 0 ? Math.floor(args.count) : undefined,
     }
     return { result: headroomReport(s, opts, s && ctx.presence ? ctx.presence.reservedSince(s.t, now) : 0, ask, now) }
+  })
+
+  // A remote Agent call is the divert the gate recommends: note it, so its
+  // spawn isn't counted against this machine. The arguments sit beside `tool`.
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const args = e as unknown as { isolation?: unknown }
+    const id = e.tool_use_id
+    if (args.isolation === 'remote' && id) ctx.remote.add(id)
+    try {
+      return await next(e)
+    } finally {
+      if (id) ctx.remote.delete(id)
+    }
   })
 
   // Progress for the THRASH detector: any tool result counts (throttled in presence).
