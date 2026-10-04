@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: draft v0.1, 2026-10-03. It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: draft v0.1, 2026-10-03; step 1 built 2026-10-04 (see § Step 1 findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -22,13 +22,13 @@ Each Claude session on the machine loads clearance. Together the sessions:
    ┌───────────────────────────────────────┐   ┌──────────────────────────────┐
    │ scribe session                        │   │ presence: sessions/<id>.json │
    │  └ sampler.ps1 (warm pwsh, -File)     │   │ gate: reads snapshot          │
-   │     ├ CIM: OS memory, process tree    │──▶│ ui: status, band, pane        │
+   │     ├ Win32: memory, process tree     │──▶│ ui: status, band, pane        │
    │     ├ registry: pid → session → cwd   │   │ hooks: session.start,         │
    │     ├ docker ps/stats (every 6th tick)│   │   agent.spawn, SubagentStart, │
    │     └ writes snapshot.json atomically │   │   tool, /clearance            │
    └───────────────────────────────────────┘   │ history: own jsonl file       │
                     ▲ claim.ps1 (CreateNew)     └──────────────────────────────┘
-                    └── watchdog in every session (10 s)
+                    └── watchdog in every session (5 s)
 ```
 
 ### Shared state: `~/.claude/clearance/`
@@ -41,14 +41,15 @@ Every file has exactly one writer, so nothing needs a lock.
 | `snapshot.json` | sampler.ps1 (temp file + rename) | all sessions, leases mod, lane-supervisor | schema below |
 | `sessions/<sessionId>.json` | that session | sampler | presence: in-flight agents, reservations, last progress time |
 | `history/<yyyy-mm>/<sessionId>.jsonl` | that session | forecaster | one record per finished subagent or session |
+| `logs/<sessionId>.log` | that session | people debugging | the last 200 election and sampler lines |
 
 `$.store` is not used for shared state. It has no locking across sessions and other mods can't read it. It only keeps per-user UI prefs.
 
 ### Scribe election (0006)
 
-- **Epoch:** the highest `n` in `scribe/`. The holder is in that file.
-- **Watchdog:** every session runs it every 10 s. The scribe is **dead** when its pid is not alive or `snapshot.t` is older than 3 intervals. The session then runs `claim.ps1 <n+1>`, and the `CreateNew` winner becomes scribe. Losers just read. Measured: 8 contenders, 1 winner.
-- **Fencing:** sampler.ps1 is started with its epoch. Before each write it checks that no `epoch-<m>` with `m > epoch` exists, and exits if one does, so a deposed scribe can't overwrite. Every snapshot carries `epoch`, and readers drop a snapshot whose epoch is below the highest claimed one.
+- **Epoch:** the highest `n` in `scribe/`. The holder is in that file: `{ sessionId, pid, procStart, at }`. Identity is the pid plus the registry's `procStart`, so the role survives a `/clear` (new session id, same process) and a reused pid is never taken for the holder.
+- **Watchdog:** every session runs it every 5 s (file reads only). The scribe is **dead** when its registry entry is gone (or its `procStart` differs), when `snapshot.t` under its epoch is older than 3 intervals, or when it wrote no snapshot within 30 s of its claim (a cold sampler's first sample). Liveness reads only `epoch` and `t` from the snapshot, so sessions running different versions of the mod never take each other's snapshots for silence. The session then runs `claim.ps1 <n+1>`, and the `CreateNew` winner becomes scribe. Losers just read. Measured: 8 contenders, 1 winner.
+- **Fencing:** sampler.ps1 is started with its epoch and its session's pid. Before each write it checks that no `epoch-<m>` with `m > epoch` and no `resigned-<epoch>` exists, and exits if one does, so a deposed scribe can't overwrite. It also exits when its session's pid is gone: `$.process.spawn` starts it through `cmd.exe`, so its parent is not the session, and an orphaned sampler would otherwise keep a dead scribe looking alive. Every snapshot carries `epoch`, and readers drop a snapshot whose epoch is below the highest claimed one.
 - **Hot reload:** a reload kills the sampler (it's a `$.process.spawn` child). The same session wins the next epoch on its next watchdog tick.
 - **Clean exit:** on `session.end` the scribe writes `scribe/resigned-<n>`, so the next claim happens without waiting out the stale timeout.
 - **Cleanup:** epoch files older than the newest 5 are deleted by the current scribe.
@@ -58,7 +59,7 @@ Every file has exactly one writer, so nothing needs a lock.
 ```jsonc
 {
   "schema": 1, "epoch": 12, "t": 1791036369900, "sampleMs": 563, "intervalMs": 5000,
-  "machine": { "totalMB": 15724, "freeMB": 698, "commitMB": 32533, "commitLimitMB": 47457 },
+  "machine": { "totalMB": 15724, "availableMB": 3230, "commitMB": 32533, "commitLimitMB": 47457 },
   "desktop": { "privateMB": 2480, "procs": 16 },                  // Claude Desktop (Electron) overhead
   "dockerVm": { "privateMB": 7029, "containersMB": 2479, "t": 1791036340000 },
   "sessions": [{
@@ -74,6 +75,7 @@ Every file has exactly one writer, so nothing needs a lock.
 ```
 
 - Memory is **private bytes**, not working set, so shared pages aren't counted twice.
+- `availableMB` is free plus standby (Task Manager's Available). The free list alone read 73 MB while 3.2 GB was available.
 - `commitLimitMB` is read on every sample, because Windows grows the pagefile.
 - A container is attributed through its `com.docker.compose.project.working_dir` label to the session whose `cwd` contains that path. Without the label it lands in `unattributed`, and the convention checks name it.
 - `clearance` is the scribe's verdict for the machine. Each session adds its own reservations when it gates.
@@ -84,7 +86,7 @@ The inputs are the snapshot, this session's reservations and the options:
 
 | Option (`userConfig`) | Default | Meaning |
 |---|---|---|
-| `minFreeGB` | 1.5 | Free RAM that must remain after admitting |
+| `minFreeGB` | 1.5 | Available RAM that must remain after admitting |
 | `maxCommitPct` | 90 | Commit as a share of the commit limit, after admitting |
 | `maxSessions` | 6 | Count ceiling for local sessions (0002) |
 | `maxAgents` | 8 | Count ceiling for subagents in flight, machine-wide (summed from presence files) |
@@ -164,6 +166,8 @@ docs/design.md                  this file
 
 Scripts run in place: `pwsh -NoProfile -NonInteractive -File <plugin root>/scripts/x.ps1`. Never pass a multi-line `-Command`, because it fails silently (found in the spike).
 
+`$` stays in `register.ts`: the validator follows `$` only within one file, never across an import. The other modules get an `Io` port (closures over `$`) from `register.ts`, which also lets tests drive them with fakes.
+
 **Reach:**
 - `$.process` runs pwsh and docker, both read-only, except for files under `~/.claude/clearance/`.
 - `$.fs` reads `~/.claude/sessions/*.json` (**never** `*.key`), project config files for the checks, and its own dir.
@@ -181,6 +185,13 @@ Scripts run in place: `pwsh -NoProfile -NonInteractive -File <plugin root>/scrip
 7. **THRASH** detection.
 
 Each step is validated, tested and committed on its own.
+
+## Step 1 findings (2026-10-04, Claude Code 2.1.286)
+
+- **No CIM in the sampler.** Under a CLI session, a pwsh child (the Store build in `C:\Program Files\WindowsApps`) is denied loading `Microsoft.Management.Infrastructure.Native.Unmanaged.DLL` (E_ACCESSDENIED), so every `Get-CimInstance` fails. The sampler now uses `GlobalMemoryStatusEx`, one Toolhelp snapshot for parent pids, and `Process.GetProcesses()` for private bytes (compiled once with `Add-Type`): 60–250 ms per sample against 560–830 ms with CIM, and a first snapshot 3–4 s after start.
+- **CLI sessions are in the registry** (`~/.claude/sessions/<pid>.json`, `entrypoint: "cli"`).
+- **Failover, measured:** a scribe killed with `taskkill /F` had its registry entry removed; the other session claimed the next epoch 11.8 s after the kill, and its snapshot was fresh within one interval. The killed scribe's sampler exited on its owner check.
+- **Resign:** after `resigned-<n>`, the next claim lands within one watchdog tick (about 1–2 s, claim included).
 
 ## Open questions
 
