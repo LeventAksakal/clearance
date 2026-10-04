@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
-import { badgeLine, badgeModel, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
+import type { ClearanceBadge } from '../types'
+import { badgeLine, badgeModel, cardLines, footerLine, TONE_COLOR, type BadgeRun } from './badge.ts'
 import { AGENT_DEFAULT_MB, DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startHistory, startTracker, type History, type Tracker } from './history.ts'
@@ -73,8 +74,10 @@ type Ctx = {
   latest: Snapshot | undefined
   /** This session's id as of the last session.start (the pane marks its row). */
   sessionId: string
-  /** The footer chip has been drawn (desktop): the status line then stays empty, not repeating it. */
+  /** The chip has been drawn (desktop): the status line then stays empty, not repeating it. */
   footerDrawn: boolean
+  /** The hint line has drawn the chip: the footer's mode labels then go back to the engine. */
+  hintDrawn: boolean
   /** Agent calls with `isolation: "remote"`, by tool_use_id: they run in the cloud, so the gate lets them through. */
   remote: Set<string>
   /** Remote subagents by agentId: their growth isn't this machine's, so the tracker skips them. */
@@ -137,6 +140,34 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
   $.ui.toast(`clearance: cleared, ${(headroomMB / 1024).toFixed(1)} GB headroom`)
 }
 
+/** The chip: its line, and a card shown above it while the pointer is on it. */
+const chip = (t: ElementTable, b: ClearanceBadge, key: string) => {
+  const card = cardLines(b)
+  return (
+    <t.Box key={key} flexDirection="row">
+      <t.Text wrap="truncate-end">{runs(t.Text, footerLine(b))}</t.Text>
+      <t.Box
+        position="absolute"
+        bottom={1}
+        left={0}
+        display="none"
+        hover={{ display: 'flex' }}
+        flexDirection="column"
+        borderStyle="round"
+        borderDimColor
+        backgroundColor="#1b1b1b"
+        paddingX={1}
+      >
+        {card.map((line, i) => (
+          <t.Text key={`c${i}`} wrap="truncate-end">
+            {runs(t.Text, line)}
+          </t.Text>
+        ))}
+      </t.Box>
+    </t.Box>
+  )
+}
+
 /** A line's runs as nested Texts, colored by tone. */
 const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
   line.map((r, i) => (
@@ -154,6 +185,7 @@ export const register: Register = (on, options) => {
     latest: undefined,
     sessionId: '',
     footerDrawn: false,
+    hintDrawn: false,
     remote: new Set(),
     remoteAgents: new Set(),
     history: undefined,
@@ -240,7 +272,12 @@ export const register: Register = (on, options) => {
         const agent = fresh
           ? gate(fresh, opts, { kind: 'agent', mb: agentForecast(ctx, 'general-purpose', now).mb }, presence.reservedSince(fresh.t, now))
           : undefined
-        const shown = badgeModel(snapshot, now, view, agent)
+        const shown = badgeModel(snapshot, now, view, agent, {
+          me: ctx.sessionId,
+          floorMB: opts.minFreeGB * 1024,
+          agentAskMB: agentForecast(ctx, 'general-purpose', now).mb,
+          sessionAskMB: opts.sessionBaselineGB * 1024,
+        })
         const key = JSON.stringify(shown)
         if (key !== shownBadge) {
           shownBadge = key
@@ -366,21 +403,37 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // The footer chip, live: the marshaller, a RAM bar and what fits, beside the
-  // model and effort labels. Another plugin's band can't hide it there.
-  // The footer chip, live: one traffic-light phrase (what can still start),
-  // the numbers after it. The footer draws text only and cuts it short, showing
-  // the whole on hover. Another plugin's band can't hide it here.
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+  // The chip, live: one traffic-light line beside the prompt, and on hover a
+  // card with the machine and every session's use. It sits in the hint line by
+  // "Auto" where there is room, and in the footer's mode labels only until the
+  // hint line has drawn it. Another plugin's band can't hide either.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     if (e.surface === 'terminal') return next(e)
     ctx.footerDrawn = true
+    if (!ctx.hintDrawn) {
+      ctx.hintDrawn = true
+      $.ui.invalidate('ui.render')
+    }
     const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
-    const { Box, Text } = $.ui.resolve(e)
+    const t = $.ui.resolve(e)
     return (
-      <Box flexDirection="row" columnGap={1}>
-        {e.props.modes.length > 0 ? <Text dimColor>{e.props.modes.join(' & ')}</Text> : null}
-        <Text wrap="truncate-end">{runs(Text, footerLine(b))}</Text>
-      </Box>
+      <t.Box flexDirection="row" columnGap={2}>
+        {e.props.hint ? <t.Text dimColor>{e.props.hint}</t.Text> : null}
+        {chip(t, b, 'chip-hint')}
+      </t.Box>
+    )
+  })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    if (e.surface === 'terminal' || ctx.hintDrawn) return next(e)
+    ctx.footerDrawn = true
+    const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
+    const t = $.ui.resolve(e)
+    return (
+      <t.Box flexDirection="row" columnGap={1}>
+        {e.props.modes.length > 0 ? <t.Text dimColor>{e.props.modes.join(' & ')}</t.Text> : null}
+        {chip(t, b, 'chip-modes')}
+      </t.Box>
     )
   })
 

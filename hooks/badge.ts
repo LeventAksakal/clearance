@@ -20,7 +20,15 @@ const waiting = (note: string): ClearanceBadge => ({
   usedPct: 0,
   availableMB: 0,
   totalMB: 0,
+  floorMB: 0,
+  agentAskMB: 0,
+  sessionAskMB: 0,
+  rows: [],
+  otherMB: 0,
 })
+
+/** What the chip needs beyond the snapshot: this session, and the gate's floor and asks. */
+export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number }
 
 /** Rounded to what the lines show (0.1 GB), so a few MB of drift doesn't redraw them. */
 const tenth = (mb: number) => (Math.round(mb / 102.4) * 1024) / 10
@@ -29,7 +37,13 @@ const tenth = (mb: number) => (Math.round(mb / 102.4) * 1024) / 10
  * The badge for the latest snapshot read; rebuilt every tick, redrawn only when
  * it changes. `agent` is the gate's verdict for one more general-purpose subagent.
  */
-export const badgeModel = (s: Snapshot | undefined, now: number, view: GateView | undefined, agent?: Verdict): ClearanceBadge => {
+export const badgeModel = (
+  s: Snapshot | undefined,
+  now: number,
+  view: GateView | undefined,
+  agent?: Verdict,
+  at: BadgeContext = { me: '', floorMB: 0, agentAskMB: 0, sessionAskMB: 0 },
+): ClearanceBadge => {
   if (!s || !view) return waiting('waiting for a snapshot')
   if (!isFresh(s, now)) return waiting(`snapshot ${Math.round(ageMs(s, now) / 1000)} s old`)
   const c = census(s)
@@ -46,6 +60,19 @@ export const badgeModel = (s: Snapshot | undefined, now: number, view: GateView 
     usedPct: Math.round(((m.totalMB - m.availableMB) / m.totalMB) * 100),
     availableMB: tenth(m.availableMB),
     totalMB: m.totalMB,
+    floorMB: at.floorMB,
+    agentAskMB: tenth(at.agentAskMB),
+    sessionAskMB: tenth(at.sessionAskMB),
+    rows: s.sessions
+      .map(r => ({
+        where: r.cwd.split(/[\\/]+/).filter(Boolean).pop() ?? r.cwd,
+        selfMB: tenth(r.selfMB),
+        childMB: tenth(r.childMB),
+        agents: r.agentsInFlight ?? null,
+        isSelf: r.sessionId === at.me,
+      }))
+      .sort((a, b) => b.selfMB + b.childMB - (a.selfMB + a.childMB)),
+    otherMB: tenth(Math.max(0, m.totalMB - m.availableMB - s.sessions.reduce((sum, r) => sum + r.selfMB + r.childMB, 0))),
   }
 }
 
@@ -90,18 +117,43 @@ export const light = (b: ClearanceBadge): Light =>
 export const LIGHT_COLOR: Record<Light, string> = { green: '#3fb950', yellow: '#e3b341', red: '#f85149', grey: '#94a3b8' }
 
 /**
- * The footer's live line. The footer cuts it at about 22 characters and shows
- * the whole on hover, so the colored head says what can start and the dim tail
- * carries the numbers.
+ * The chip's line: the colored head says what can start, or why nothing can;
+ * the RAM figure follows. Dense, so it shows whole beside the prompt.
  */
 export const footerLine = (b: ClearanceBadge): BadgeRun[] => {
   const tier = light(b)
   const head = (text: string): BadgeRun => ({ text, color: LIGHT_COLOR[tier], strong: true })
   if (tier === 'grey') return [head('● clearance'), { text: ` ${b.note}`, dim: true }]
-  const free = `${gb(b.availableMB)} GB free, RAM ${b.usedPct}%`
-  if (tier === 'green')
-    return [head(`● cleared for ${plural(b.fits, 'session')}`), { text: ` · ${plural(b.agentFits, 'agent')} · ${free}`, dim: true }]
-  if (tier === 'yellow')
-    return [head(`● cleared for ${plural(b.agentFits, 'agent')}`), { text: ` · no new session · ${free}`, dim: true }]
-  return [head('● on hold'), { text: ` · nothing fits · ${free}`, dim: true }]
+  const ram = { text: ` · RAM ${b.usedPct}%`, dim: true }
+  if (tier === 'green') return [head(`● cleared: ${plural(b.fits, 'session')}, ${plural(b.agentFits, 'agent')}`), ram]
+  if (tier === 'yellow') return [head(`● cleared: ${plural(b.agentFits, 'agent')}`), { text: ', no session', color: LIGHT_COLOR.yellow }, ram]
+  const short = b.availableMB - b.floorMB < b.agentAskMB
+  return [head('● hold: '), { text: short ? `${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)}` : b.reasons[0] ?? 'nothing fits', color: LIGHT_COLOR.red }, ram]
 }
+
+const col = (text: string, width: number) => (text.length > width ? text.slice(0, width - 1) + '…' : text.padEnd(width))
+const num = (mb: number) => gb(mb).padStart(5)
+
+/** The hover card: the machine, why, and every session's use. One run list per line. */
+export const cardLines = (b: ClearanceBadge): BadgeRun[][] => {
+  if (b.mood === 'WAITING') return [[{ text: `clearance: ${b.note}`, dim: true }]]
+  const used = b.totalMB - b.availableMB
+  const lines: BadgeRun[][] = [
+    [{ text: 'RAM ', strong: true }, { text: `${gb(used)} of ${gb(b.totalMB)} GB in use, ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)} GB` }],
+    [
+      { text: 'asks ', strong: true },
+      { text: `session ${gb(b.sessionAskMB)} GB, subagent ${gb(b.agentAskMB)} GB → ` },
+      { text: `${plural(b.fits, 'session')}, ${plural(b.agentFits, 'agent')} fit`, color: LIGHT_COLOR[light(b)] },
+    ],
+  ]
+  for (const reason of b.reasons) lines.push([{ text: `hold: ${reason}`, color: LIGHT_COLOR.red }])
+  lines.push([{ text: `${col('session', 16)} ${'self'.padStart(5)} ${'child'.padStart(5)}  agents`, dim: true }])
+  for (const r of b.rows)
+    lines.push([
+      { text: `${col(r.where, 16)} ${num(r.selfMB)} ${num(r.childMB)}  ${r.agents === null ? '-' : r.agents}`, strong: r.isSelf },
+      ...(r.isSelf ? [{ text: '  ← this', dim: true }] : []),
+    ])
+  lines.push([{ text: `${col('everything else', 16)} ${num(b.otherMB)}`, dim: true }, { text: '  desktop app, WSL, browsers…', dim: true }])
+  return lines
+}
+

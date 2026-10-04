@@ -1,6 +1,17 @@
 /** The gate view's HOLD reasons (the badge and the pane show them); null while cleared. */
 export type ClearanceBand = { state: 'HOLD'; headroomMB: number; reasons: string[] }
 
+/** One session in the chip's hover card. */
+export type ClearanceBadgeRow = {
+  /** The session's folder, last segment. */
+  where: string
+  selfMB: number
+  childMB: number
+  /** Subagents in flight; null for a session without the mod. */
+  agents: number | null
+  isSelf: boolean
+}
+
 /** The band's badge, always up: the marshaller's mood and the line beside it. */
 export type ClearanceBadge = {
   mood: 'CLEARED' | 'HOLD' | 'WAITING'
@@ -20,6 +31,14 @@ export type ClearanceBadge = {
   reasons: string[]
   /** Why there are no numbers while WAITING; empty otherwise. */
   note: string
+  /** The gate's numbers, so the chip can say why it holds. */
+  floorMB: number
+  agentAskMB: number
+  sessionAskMB: number
+  /** Every session's use, largest first, for the hover card. */
+  rows: ClearanceBadgeRow[]
+  /** RAM in use that no session owns: the desktop app, WSL, browsers, the rest of the machine. */
+  otherMB: number
 }
 
 /** One session row of the /clearance pane. */

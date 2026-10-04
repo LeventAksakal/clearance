@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { badgeLine, badgeModel, footerLine, light } from './badge.ts'
+import { badgeLine, badgeModel, cardLines, footerLine, light } from './badge.ts'
 import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
@@ -78,31 +78,42 @@ describe('badge', () => {
   })
 })
 
-describe('footer', () => {
+describe('chip', () => {
   const at = (availableMB: number) => {
     const s = snap(availableMB)
-    return badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+    return badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }), {
+      me: 's1',
+      floorMB: 1536,
+      agentAskMB: 300,
+      sessionAskMB: 716.8,
+    })
   }
 
-  test('green while a session fits, with the numbers after the phrase', () => {
+  test('green while a session fits', () => {
     const b = at(2048 + 600) // 1.1 GB over the 1.5 GB floor: one 0.7 GB session, or three 0.3 GB subagents
     expect(light(b)).toBe('green')
-    expect(text(footerLine(b))).toBe('● cleared for 1 session · 3 agents · 2.6 GB free, RAM 84%')
+    expect(text(footerLine(b))).toBe('● cleared: 1 session, 3 agents · RAM 84%')
   })
 
   test('yellow when only subagents fit', () => {
     const b = at(1536 + 400)
     expect(light(b)).toBe('yellow')
-    expect(text(footerLine(b))).toBe('● cleared for 1 agent · no new session · 1.9 GB free, RAM 88%')
+    expect(text(footerLine(b))).toBe('● cleared: 1 agent, no session · RAM 88%')
   })
 
-  test('red when nothing fits, grey without numbers', () => {
+  test('red says why: what is free against the floor', () => {
     expect(light(at(1600))).toBe('red')
-    expect(text(footerLine(at(1600)))).toBe('● on hold · nothing fits · 1.6 GB free, RAM 90%')
+    expect(text(footerLine(at(1600)))).toBe('● hold: 1.6 GB free, floor 1.5 · RAM 90%')
     expect(text(footerLine(badgeModel(undefined, 0, undefined)))).toBe('● clearance waiting for a snapshot')
   })
 
-  test('the colored head fits the footer before it cuts', () => {
-    for (const mb of [8000, 2648, 1936, 1600]) expect(footerLine(at(mb))[0]!.text.length).toBeLessThanOrEqual(24)
+  test('the hover card: the machine, the asks, every session and the rest', () => {
+    const lines = cardLines(at(1600)).map(text)
+    expect(lines[0]).toBe('RAM 14.4 of 16.0 GB in use, 1.6 GB free, floor 1.5 GB')
+    expect(lines[1]).toBe('asks session 0.7 GB, subagent 0.3 GB → 0 sessions, 0 agents fit')
+    expect(lines).toContain('session           self child  agents')
+    expect(lines).toContain('x                  0.6   0.0  1  ← this')
+    // 14.4 GB in use, 1.2 GB of it the two sessions
+    expect(lines[lines.length - 1]).toBe('everything else   13.3  desktop app, WSL, browsers…')
   })
 })
