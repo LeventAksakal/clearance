@@ -52,7 +52,7 @@ export const badgeModel = (s: Snapshot | undefined, now: number, view: GateView 
 export type BadgeTone = 'ok' | 'warn' | 'idle'
 
 /** A run of the badge's line: `strong` is the word, `dim` the rest. */
-export type BadgeRun = { text: string; tone?: BadgeTone; strong?: boolean; dim?: boolean }
+export type BadgeRun = { text: string; tone?: BadgeTone; color?: string; strong?: boolean; dim?: boolean }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
@@ -80,23 +80,28 @@ export const badgeLine = (b: ClearanceBadge, columns: number): BadgeRun[] => {
 /** Text colors by tone, matching the sprite's paddles. */
 export const TONE_COLOR: Record<BadgeTone, string> = { ok: '#3fb950', warn: '#f0a020', idle: '#94a3b8' }
 
-const BAR = 8
+/** Traffic-light tiers for the footer: what can still start. */
+export type Light = 'green' | 'yellow' | 'red' | 'grey'
+
+/** green: a session fits; yellow: only subagents fit; red: nothing fits; grey: no numbers. */
+export const light = (b: ClearanceBadge): Light =>
+  b.mood === 'WAITING' ? 'grey' : b.mood === 'CLEARED' && b.fits > 0 ? 'green' : b.agentFits > 0 ? 'yellow' : 'red'
+
+export const LIGHT_COLOR: Record<Light, string> = { green: '#3fb950', yellow: '#e3b341', red: '#f85149', grey: '#94a3b8' }
 
 /**
- * The footer's live line: a RAM bar, then what fits. Short, since it shares the
- * footer with the model and effort labels.
+ * The footer's live line. The footer cuts it at about 22 characters and shows
+ * the whole on hover, so the colored head says what can start and the dim tail
+ * carries the numbers.
  */
 export const footerLine = (b: ClearanceBadge): BadgeRun[] => {
-  if (b.mood === 'WAITING') return [{ text: 'clearance', tone: 'idle', strong: true }, { text: ` ${b.note}`, dim: true }]
-  const lit = Math.min(BAR, Math.max(0, Math.round((b.usedPct / 100) * BAR)))
-  const ram: BadgeTone = b.mood === 'HOLD' ? 'warn' : 'ok'
-  return [
-    { text: '▰'.repeat(lit), tone: ram },
-    { text: '▱'.repeat(BAR - lit), dim: true },
-    { text: ` ${b.usedPct}% · ${gb(b.availableMB)} GB free` },
-    { text: ` · sessions `, dim: true },
-    b.mood === 'HOLD' ? { text: 'hold', tone: 'warn', strong: true } : { text: `+${b.fits}`, tone: 'ok', strong: true },
-    { text: ` · agents `, dim: true },
-    b.agentFits > 0 ? { text: `+${b.agentFits}`, tone: 'ok', strong: true } : { text: 'hold', tone: 'warn', strong: true },
-  ]
+  const tier = light(b)
+  const head = (text: string): BadgeRun => ({ text, color: LIGHT_COLOR[tier], strong: true })
+  if (tier === 'grey') return [head('● clearance'), { text: ` ${b.note}`, dim: true }]
+  const free = `${gb(b.availableMB)} GB free, RAM ${b.usedPct}%`
+  if (tier === 'green')
+    return [head(`● cleared for ${plural(b.fits, 'session')}`), { text: ` · ${plural(b.agentFits, 'agent')} · ${free}`, dim: true }]
+  if (tier === 'yellow')
+    return [head(`● cleared for ${plural(b.agentFits, 'agent')}`), { text: ` · no new session · ${free}`, dim: true }]
+  return [head('● on hold'), { text: ` · nothing fits · ${free}`, dim: true }]
 }

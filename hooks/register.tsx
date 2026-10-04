@@ -75,8 +75,7 @@ type Ctx = {
   footerDrawn: boolean
 }
 
-/** The footer's scale: 16 × 13 sprite pixels → 24 × 19.5 CSS px, a footer row's height. */
-const FOOTER_SCALE = 1.5
+
 
 /** The latest snapshot if still fresh, with this session's subagents counted as they are now. */
 async function current($: EngineInterface, ctx: Ctx, now: number): Promise<Snapshot | undefined> {
@@ -111,7 +110,7 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
 /** A line's runs as nested Texts, colored by tone. */
 const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
   line.map((r, i) => (
-    <Text key={`r${i}`} color={r.tone ? TONE_COLOR[r.tone] : undefined} bold={r.strong} dimColor={r.dim}>
+    <Text key={`r${i}`} color={r.color ?? (r.tone ? TONE_COLOR[r.tone] : undefined)} bold={r.strong} dimColor={r.dim}>
       {r.text}
     </Text>
   ))
@@ -254,23 +253,17 @@ export const register: Register = (on, options) => {
 
   // The footer chip, live: the marshaller, a RAM bar and what fits, beside the
   // model and effort labels. Another plugin's band can't hide it there.
+  // The footer chip, live: one traffic-light phrase (what can still start),
+  // the numbers after it. The footer draws text only and cuts it short, showing
+  // the whole on hover. Another plugin's band can't hide it here.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     if (e.surface === 'terminal') return next(e)
-    const t = $.ui.resolve(e)
-    if (!('Svg' in t)) return next(e)
     ctx.footerDrawn = true
     const b = (await read($, badge)) ?? badgeModel(undefined, 0, undefined)
-    const { Box, Text } = t
+    const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box flexDirection="row" alignItems="center" columnGap={1}>
+      <Box flexDirection="row" columnGap={1}>
         {e.props.modes.length > 0 ? <Text dimColor>{e.props.modes.join(' & ')}</Text> : null}
-        <t.Svg
-          source={spriteSvg(b.mood, FOOTER_SCALE)}
-          alt={`clearance: ${b.mood.toLowerCase()}`}
-          width={16 * FOOTER_SCALE}
-          height={13 * FOOTER_SCALE}
-          isInteractive
-        />
         <Text wrap="truncate-end">{runs(Text, footerLine(b))}</Text>
       </Box>
     )

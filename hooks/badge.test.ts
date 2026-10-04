@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { badgeLine, badgeModel, footerLine } from './badge.ts'
+import { badgeLine, badgeModel, footerLine, light } from './badge.ts'
 import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
@@ -79,18 +79,30 @@ describe('badge', () => {
 })
 
 describe('footer', () => {
-  test('a RAM bar, what is free, and a verdict for sessions and for subagents', () => {
-    const s = snap(2048 + 600)
-    const b = badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
-    // 1.1 GB over the 1.5 GB floor: one 0.7 GB session fits, or three 0.3 GB subagents.
-    expect(b.mood).toBe('CLEARED')
-    expect(text(footerLine(b))).toBe('▰▰▰▰▰▰▰▱ 84% · 2.6 GB free · sessions +1 · agents +3')
-    const held = snap(1700)
-    const h = badgeModel(held, 2_000, advance(undefined, held, DEFAULTS), gate(held, DEFAULTS, { kind: 'agent', mb: 300 }))
-    expect(text(footerLine(h))).toBe('▰▰▰▰▰▰▰▱ 90% · 1.7 GB free · sessions hold · agents hold')
+  const at = (availableMB: number) => {
+    const s = snap(availableMB)
+    return badgeModel(s, 2_000, advance(undefined, s, DEFAULTS), gate(s, DEFAULTS, { kind: 'agent', mb: 300 }))
+  }
+
+  test('green while a session fits, with the numbers after the phrase', () => {
+    const b = at(2048 + 600) // 1.1 GB over the 1.5 GB floor: one 0.7 GB session, or three 0.3 GB subagents
+    expect(light(b)).toBe('green')
+    expect(text(footerLine(b))).toBe('● cleared for 1 session · 3 agents · 2.6 GB free, RAM 84%')
   })
 
-  test('waits without numbers', () => {
-    expect(text(footerLine(badgeModel(undefined, 0, undefined)))).toBe('clearance waiting for a snapshot')
+  test('yellow when only subagents fit', () => {
+    const b = at(1536 + 400)
+    expect(light(b)).toBe('yellow')
+    expect(text(footerLine(b))).toBe('● cleared for 1 agent · no new session · 1.9 GB free, RAM 88%')
+  })
+
+  test('red when nothing fits, grey without numbers', () => {
+    expect(light(at(1600))).toBe('red')
+    expect(text(footerLine(at(1600)))).toBe('● on hold · nothing fits · 1.6 GB free, RAM 90%')
+    expect(text(footerLine(badgeModel(undefined, 0, undefined)))).toBe('● clearance waiting for a snapshot')
+  })
+
+  test('the colored head fits the footer before it cuts', () => {
+    for (const mb of [8000, 2648, 1936, 1600]) expect(footerLine(at(mb))[0]!.text.length).toBeLessThanOrEqual(24)
   })
 })
