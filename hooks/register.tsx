@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
-import { bandLine, badgeModel, cardLines, light, LIGHT_COLOR, TONE_COLOR, type BadgeRun } from './badge.ts'
+import { bandLine, badgeModel, cardRows, light, LIGHT_COLOR, TONE_COLOR, type BadgeRun } from './badge.ts'
 import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAgents, withoutSession } from './admission.ts'
 import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
@@ -174,10 +174,13 @@ async function toastIfWaiting($: EngineInterface, headroomMB: number): Promise<v
   $.ui.toast(`clearance: cleared, ${(headroomMB / 1024).toFixed(1)} GB headroom`)
 }
 
+/** A run's Text style: its color or tone, strong, dim. */
+const runStyle = (r: BadgeRun) => ({ color: r.color ?? (r.tone ? TONE_COLOR[r.tone] : undefined), bold: r.strong, dimColor: r.dim })
+
 /** A line's runs as nested Texts, colored by tone. */
 const runs = (Text: ElementTable['Text'], line: BadgeRun[]) =>
   line.map((r, i) => (
-    <Text key={`r${i}`} color={r.color ?? (r.tone ? TONE_COLOR[r.tone] : undefined)} bold={r.strong} dimColor={r.dim}>
+    <Text key={`r${i}`} {...runStyle(r)}>
       {r.text}
     </Text>
   ))
@@ -333,13 +336,13 @@ export const register: Register = (on, options) => {
           relearnSession(ctx, now)
         }
         void keepHistory(now).catch(err => sessionIo.log(`history: ${String(err)}`))
-        const agent = fresh
-          ? gate(fresh, opts, { kind: 'agent', mb: agentForecast(ctx, 'general-purpose', now).mb }, presence.reservedSince(fresh.t, now))
-          : undefined
+        const agentAsk = agentForecast(ctx, 'general-purpose', now)
+        const agent = fresh ? gate(fresh, opts, { kind: 'agent', mb: agentAsk.mb }, presence.reservedSince(fresh.t, now)) : undefined
         const shown = badgeModel(snapshot, now, view, agent, {
           me: ctx.sessionId,
           floorMB: floorMB(opts, fresh?.machine.totalMB ?? 0),
-          agentAskMB: agentForecast(ctx, 'general-purpose', now).mb,
+          agentAskMB: agentAsk.mb,
+          agentBasis: basis(agentAsk),
           sessionAskMB: opts.sessionBaselineGB * 1024,
           ramTrail: [...ramTrail],
           floorBasis: floorBasis(ctx),
@@ -487,11 +490,29 @@ export const register: Register = (on, options) => {
     const lines = paneLines(await read($, pane), e.props.bodyColumns, await $.clock.now())
     return (
       <Box flexDirection="column">
-        {lines.map((line, i) => (
-          <Text key={`l${i}`} wrap="truncate-end" {...TONE[line.tone]}>
-            {line.text || ' '}
-          </Text>
-        ))}
+        {lines.map((line, i) =>
+          line.cells ? (
+            <Box key={`l${i}`} flexDirection="row">
+              {line.cells.map((c, j) =>
+                c.width === undefined ? (
+                  <Text key={`t${j}`} wrap="truncate-end" {...TONE[line.tone]}>
+                    {c.text || ' '}
+                  </Text>
+                ) : (
+                  <Box key={`w${j}`} width={c.width} flexShrink={0} justifyContent={c.right ? 'flex-end' : 'flex-start'}>
+                    <Text wrap="truncate-end" {...TONE[line.tone]}>
+                      {c.text || ' '}
+                    </Text>
+                  </Box>
+                ),
+              )}
+            </Box>
+          ) : (
+            <Text key={`l${i}`} wrap="truncate-end" {...TONE[line.tone]}>
+              {line.text || ' '}
+            </Text>
+          ),
+        )}
       </Box>
     )
   })
@@ -510,7 +531,10 @@ export const register: Register = (on, options) => {
     const sprite =
       // The terminal's table stands a fragment in for Svg; it gets a glyph.
       e.surface !== 'terminal' && 'Svg' in t ? (
-        <t.Svg source={spriteSvg(b.mood === 'THRASH' ? 'thrash' : tier)} alt={`clearance: ${b.mood === 'THRASH' ? 'THRASH' : tier}`} width={W * SCALE} height={H * SCALE} isInteractive />
+        // An image, not an interactive frame: the desktop rebuilds the band on
+        // every redraw, and a rebuilt frame blanks and restarts its animation,
+        // while an image of the same source comes from cache, still running.
+        <t.Svg source={spriteSvg(b.mood === 'THRASH' ? 'thrash' : tier)} alt={`clearance: ${b.mood === 'THRASH' ? 'THRASH' : tier}`} width={W * SCALE} height={H * SCALE} />
       ) : (
         <Text color={LIGHT_COLOR[tier]} bold>
           ●
@@ -519,10 +543,22 @@ export const register: Register = (on, options) => {
     const ours = (
       <Box key="clearance-band" flexDirection="column" paddingX={1}>
         <Box display="none" hover={{ display: 'flex' }} flexDirection="column" marginBottom={1}>
-          {cardLines(b).map((line, i) => (
-            <Text key={`c${i}`} wrap="truncate-end">
-              {runs(Text, line)}
-            </Text>
+          {cardRows(b).map((row, i) => (
+            <Box key={`c${i}`} flexDirection="row">
+              {row.map((c, j) =>
+                c.width === undefined ? (
+                  <Text key={`t${j}`} wrap="truncate-end" {...runStyle(c)}>
+                    {c.text}
+                  </Text>
+                ) : (
+                  <Box key={`w${j}`} width={c.width} flexShrink={0} justifyContent={c.right ? 'flex-end' : 'flex-start'}>
+                    <Text wrap="truncate-end" {...runStyle(c)}>
+                      {c.text || ' '}
+                    </Text>
+                  </Box>
+                ),
+              )}
+            </Box>
           ))}
         </Box>
         <Box flexDirection="row" alignItems="center" columnGap={1}>

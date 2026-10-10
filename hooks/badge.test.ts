@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { bandLine, badgeModel, cardLines, light } from './badge.ts'
+import { bandLine, badgeModel, cardRows, COL, light, rowText, size } from './badge.ts'
 import { DEFAULTS, advance, gate } from './gate.ts'
 import type { Snapshot } from './snapshot.ts'
 import { FRAMES, H, W, frame, spriteSvg } from './sprite.ts'
@@ -89,14 +89,27 @@ describe('band line', () => {
     expect(text(bandLine(badgeModel(undefined, 0, undefined)))).toBe('● clearance  waiting for a snapshot')
   })
 
-  test('the hover card: the machine, the asks, every session and the rest', () => {
-    const lines = cardLines(at(1600)).map(text)
-    expect(lines[0]).toBe('RAM 14.4 of 16.0 GB in use, 1.6 GB free, floor 1.5 GB')
-    expect(lines[1]).toBe('paging not read · floor: policy, 5% of RAM')
-    expect(lines[2]).toBe('asks session 0.7 GB, subagent 0.3 GB → 0 sessions, 0 agents fit')
-    expect(lines).toContain('GB                self child   ctr  agents')
-    expect(lines).toContain('x                  0.6   0.0   0.0  1  ← this')
+  test('the hover card: the machine, the asks, every session and the rest, in columns', () => {
+    const rows = cardRows(at(1600))
+    const lines = rows.map(rowText)
+    expect(lines[0]).toBe('RAM     14.4 of 16.0 GB in use, 1.6 GB free, floor 1.5 GB')
+    expect(lines[1]).toBe('paging  not read · floor: policy, 5% of RAM')
+    expect(lines[2]).toBe('asks    session 717 MB, subagent 300 MB → 0 sessions, 0 agents fit')
+    expect(lines).toContain('GB                   self  child    ctr  agents')
+    expect(lines).toContain('x                     0.6    0.0    0.0       1  ← this')
     // 14.4 GB in use, 1.2 GB of it the two sessions
-    expect(lines[lines.length - 1]).toBe('everything else   13.3  browsers, system, the rest')
+    expect(lines[lines.length - 1]).toBe('everything else      13.3                        browsers, system')
+    // every table cell has its column's width, numbers right-aligned
+    const table = rows.slice(rows.findIndex(r => r[0]?.text === 'GB'))
+    for (const r of table) {
+      expect(r[0]?.width).toBe(COL.name)
+      expect(r.slice(1, 4).every(c => c.width === COL.num && c.right === true)).toBe(true)
+    }
+  })
+
+  test('sizes under 1 GB read in MB, so a small subagent is not 0.0 GB', () => {
+    expect(size(23)).toBe('23 MB')
+    expect(size(999)).toBe('999 MB')
+    expect(size(1258)).toBe('1.2 GB')
   })
 })

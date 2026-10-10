@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: v0.1.0, 2026-10-04; all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: v0.1.1, 2026-10-10 (v0.1.0 2026-10-04); all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 

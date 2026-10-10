@@ -54,7 +54,10 @@ export const paneModel = (s: Snapshot, view: GateView, o: GateOptions, me: strin
 }
 
 export type Tone = 'plain' | 'dim' | 'ok' | 'warn' | 'head'
-export type PaneLine = { text: string; tone: Tone }
+/** A table cell: a fixed `width` in character cells (`ch` on the desktop), `right` aligned for numbers; no width takes the rest. */
+export type PaneCell = { text: string; width?: number; right?: boolean }
+/** A line; a table row also carries its cells, so a proportional font still lines the columns up. */
+export type PaneLine = { text: string; tone: Tone; cells?: PaneCell[] }
 
 const fit = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text.padEnd(width))
 const right = (text: string, width: number) => (text.length > width ? text.slice(0, width) : text.padStart(width))
@@ -87,12 +90,23 @@ export const paneLines = (m: ClearancePane | null, columns: number, now: number)
   const rest = Math.max(10, w - 44 - 2)
   const whereW = Math.min(28, Math.ceil(rest / 2))
   const topW = Math.max(0, rest - whereW)
-  const row = (id: string, where: string, self: string, kids: string, agents: string, progress: string, top: string) =>
+  const text = (id: string, where: string, self: string, kids: string, agents: string, progress: string, top: string) =>
     `${fit(id, 9)}${fit(where, whereW)} ${right(self, 6)} ${right(kids, 11)} ${right(agents, 6)} ${right(progress, 8)}  ${fit(top, topW)}`.trimEnd()
-  out.push({ text: row('session', 'where', 'self', 'children', 'agents', 'progress', 'largest child'), tone: 'head' })
+  const cells = (id: string, where: string, self: string, kids: string, agents: string, progress: string, top: string): PaneCell[] => [
+    { text: id, width: 9 },
+    { text: where, width: whereW },
+    { text: self, width: 7, right: true },
+    { text: kids, width: 12, right: true },
+    { text: agents, width: 7, right: true },
+    { text: progress, width: 9, right: true },
+    { text: '', width: 2 },
+    { text: top },
+  ]
+  const row = (...c: Parameters<typeof text>) => ({ text: text(...c), cells: cells(...c) })
+  out.push({ ...row('session', 'where', 'self', 'children', 'agents', 'progress', 'largest child'), tone: 'head' })
   for (const s of m.sessions) {
     out.push({
-      text: row(
+      ...row(
         `${s.id}${s.isSelf ? '*' : ''}`,
         s.where,
         gb(s.selfMB),

@@ -26,8 +26,11 @@ describe('badge band', () => {
   test('draws the marshaller where the surface has Svg', async ($, on) => {
     on('ui.render', () => ({ type: 'engine', ref: 'AbovePrompt' }) as never)
     const desktop = await $.ui.mount({ ...BAND, surface: 'desktop' })
-    // The kit's `find` doesn't index Svg leaves; the drawn tree has it.
-    expect(JSON.stringify(await desktop.drawn())).toContain('"type":"Svg"')
+    // The kit's `find` doesn't index Svg leaves; the drawn tree has it. An
+    // image, not an interactive frame: a rebuilt frame blanks on every redraw.
+    const drawn = JSON.stringify(await desktop.drawn())
+    expect(drawn).toContain('"type":"Svg"')
+    expect(drawn).not.toContain('isInteractive')
     await desktop.unmount()
     const terminal = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await terminal.find({ type: 'Text', text: '●' })).toBeDefined()
