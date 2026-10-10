@@ -1,6 +1,6 @@
 # clearance
 
-> Status: **v0.1.0**. All 7 build steps are done: the shared snapshot and scribe election, presence and the gate, admission, the `/clearance` pane, empirical forecasts, Docker and desktop attribution with convention checks, and THRASH with a floor learned from paging pressure. Windows only.
+> Status: **v0.1.1**. All 7 build steps are done: the shared snapshot and scribe election, presence and the gate, admission, the `/clearance` pane, empirical forecasts, Docker and desktop attribution with convention checks, and THRASH with a floor learned from paging pressure. Windows only.
 
 A Claude Code mod that makes every session on a machine aware of the machine's resources and of the other sessions:
 
@@ -19,7 +19,7 @@ The band above the prompt, always up:
 
 - `2s·6a`: two more sessions and six more subagents fit. The sparkline is RAM in use over the last 50 s.
 - The pixel marshaller takes the traffic-light tier: green waves both paddles (a session fits), yellow waves one (only subagents fit), red crosses them overhead (nothing fits), grey dozes (no snapshot). In THRASH it shakes and the line reads `▲ THRASH … spawns refused`.
-- Hover the band for the machine, the floor and what it rests on, the forecasts, and every session's own, child and container memory, then the desktop app, the VM and everything else.
+- Hover the band for the machine, the floor and what it rests on, the asks and what they rest on (sizes under 1 GB in MB), and a table of every session's own, child and container memory, then the desktop app, the VM and everything else. The table's columns are fixed-width cells, so they line up in the desktop's proportional font too.
 
 `/clearance` opens the full pane; `/clearance check` runs the convention checks (read-only): Supabase `project_id` left as default or shared, compose stacks without a `working_dir` label, hard-coded host ports, and host-port or project-name collisions between running containers.
 
@@ -42,7 +42,7 @@ Shared state lives in `~/.claude/clearance/` (see [docs/design.md](docs/design.m
   - `verify.ps1` is a manual, read-only cross-check of the snapshot (`pwsh -File scripts/verify.ps1`).
 - `$.fs`:
   - reads `~/.claude/sessions/*.json` (never the `*.key` files);
-  - reads and writes `~/.claude/clearance/`: this session's presence file, its history file `history/<yyyy-mm>/<sessionId>.jsonl` (one line per finished subagent: type, duration, growth; one line of the session's peaks), and, while it is scribe, `pressure.json` (a histogram of paging against available memory);
+  - reads and writes `~/.claude/clearance/`: this session's presence file, its history file `history/<yyyy-mm>/<sessionId>.jsonl` (one line per finished subagent: type, duration, growth; one line of the session's peaks), and, while it is scribe, `pressure.json` (a histogram of paging against available memory; when the machine's RAM changes, the old one is kept as `pressure-<MB>.json` and learning starts over);
   - reads every session's history of the last two months and `pressure.json` to learn the forecasts and the floor;
   - for `/clearance check` only: reads `supabase/config.toml` and compose files in each session's folder and one level down.
 - Hooks: `session.start`, `session.end`, `tool.call` (every tool, after `next`, only to note progress; the call is never changed), `turn.start` and `turn.complete` (only to note whether the session is working), `tool.call` of `Agent` (notes `isolation: "remote"`), `agent.spawn` (refuses a subagent over the cap or in THRASH), `classic.SubagentStart` (adds the subagent's budget line; starts measuring it), `classic.SubagentStop` (records what it cost), `command.run` of `clearance`, `ui.render` of `AbovePrompt` (the band) and of `Pane` (the pane).

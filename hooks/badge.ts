@@ -24,6 +24,7 @@ const waiting = (note: string): ClearanceBadge => ({
   floorMB: 0,
   agentAskMB: 0,
   sessionAskMB: 0,
+  agentBasis: '',
   rows: [],
   otherMB: 0,
   ramTrail: [],
@@ -35,7 +36,7 @@ const waiting = (note: string): ClearanceBadge => ({
 })
 
 /** What the chip needs beyond the snapshot: this session, and the gate's floor and asks. */
-export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number; ramTrail?: number[]; floorBasis?: string }
+export type BadgeContext = { me: string; floorMB: number; agentAskMB: number; sessionAskMB: number; ramTrail?: number[]; floorBasis?: string; agentBasis?: string }
 
 /** Rounded to what the lines show (0.1 GB), so a few MB of drift doesn't redraw them. */
 const tenth = (mb: number) => (Math.round(mb / 102.4) * 1024) / 10
@@ -72,8 +73,9 @@ export const badgeModel = (
     availableMB: tenth(m.availableMB),
     totalMB: m.totalMB,
     floorMB: at.floorMB,
-    agentAskMB: tenth(at.agentAskMB),
-    sessionAskMB: tenth(at.sessionAskMB),
+    agentAskMB: Math.round(at.agentAskMB),
+    sessionAskMB: Math.round(at.sessionAskMB),
+    agentBasis: at.agentBasis ?? '',
     rows: s.sessions
       .map(r => ({
         where: r.cwd.split(/[\\/]+/).filter(Boolean).pop() ?? r.cwd,
@@ -113,37 +115,69 @@ export const light = (b: ClearanceBadge): Light =>
 
 export const LIGHT_COLOR: Record<Light, string> = { green: '#3fb950', yellow: '#e3b341', red: '#f85149', grey: '#94a3b8' }
 
-const col = (text: string, width: number) => (text.length > width ? text.slice(0, width - 1) + '…' : text.padEnd(width))
-const num = (mb: number) => gb(mb).padStart(5)
+/** A size as the card says it: MB under 1 GB, so a 23 MB subagent doesn't read as 0.0 GB. */
+export const size = (mb: number) => (mb < 1000 ? `${Math.round(mb)} MB` : `${gb(mb)} GB`)
 
-/** The hover card: the machine, why, and every session's use. One run list per line. */
-export const cardLines = (b: ClearanceBadge): BadgeRun[][] => {
+/**
+ * One cell of a hover-card row. A `width` (character cells; `ch` on the
+ * desktop) makes it a column, cut with an ellipsis; `right` aligns it to its
+ * column's end, so numbers line up whatever the font. No width: the rest of the row.
+ */
+export type CardCell = BadgeRun & { width?: number; right?: boolean }
+export type CardRow = CardCell[]
+
+/** Column widths: labels; then the table's name, three sizes and the subagent count. */
+export const COL = { label: 8, name: 18, num: 7, agents: 8 } as const
+
+const cell = (text: string, width: number, rest: Omit<CardCell, 'text' | 'width'> = {}): CardCell => ({ text, width, ...rest })
+const n1 = (mb: number) => gb(mb)
+
+const tableRow = (name: string, nums: (number | null)[], agents: string, rest: Omit<CardCell, 'text' | 'width'> = {}): CardRow => [
+  cell(name, COL.name, rest),
+  ...nums.map(mb => cell(mb === null ? '' : n1(mb), COL.num, { ...rest, right: true })),
+  cell(agents, COL.agents, { ...rest, right: true }),
+]
+
+/** The hover card: the machine, why, and every session's use, in columns. */
+export const cardRows = (b: ClearanceBadge): CardRow[] => {
   if (b.mood === 'WAITING') return [[{ text: `clearance: ${b.note}`, dim: true }]]
   const used = b.totalMB - b.availableMB
-  const lines: BadgeRun[][] = [
-    [{ text: 'RAM ', strong: true }, { text: `${gb(used)} of ${gb(b.totalMB)} GB in use, ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)} GB` }],
+  const label = (text: string) => cell(text, COL.label, { strong: true })
+  const rows: CardRow[] = [
+    [label('RAM'), { text: `${gb(used)} of ${gb(b.totalMB)} GB in use, ${gb(b.availableMB)} GB free, floor ${gb(b.floorMB)} GB` }],
+    [label('paging'), { text: `${b.pagesInPerSec === null ? 'not read' : `${Math.round(b.pagesInPerSec)}/s`} · floor: ${b.floorBasis || 'policy, 5% of RAM'}`, dim: true }],
     [
-      { text: 'paging ', strong: true },
-      { text: `${b.pagesInPerSec === null ? 'not read' : `${Math.round(b.pagesInPerSec)}/s`} · floor: ${b.floorBasis || 'policy, 5% of RAM'}`, dim: true },
-    ],
-    [
-      { text: 'asks ', strong: true },
-      { text: `session ${gb(b.sessionAskMB)} GB, subagent ${gb(b.agentAskMB)} GB → ` },
+      label('asks'),
+      { text: `session ${size(b.sessionAskMB)}, subagent ${size(b.agentAskMB)} → ` },
       { text: `${plural(b.fits, 'session')}, ${plural(b.agentFits, 'agent')} fit`, color: LIGHT_COLOR[light(b)] },
     ],
   ]
-  for (const reason of b.reasons) lines.push([{ text: `hold: ${reason}`, color: LIGHT_COLOR.red }])
-  lines.push([{ text: `${col('GB', 16)} ${'self'.padStart(5)} ${'child'.padStart(5)} ${'ctr'.padStart(5)}  agents`, dim: true }])
+  if (b.agentBasis) rows.push([cell('', COL.label), { text: `subagent: ${b.agentBasis}`, dim: true }])
+  for (const reason of b.reasons) rows.push([label('hold'), { text: reason, color: LIGHT_COLOR.red }])
+  rows.push([{ text: ' ' }])
+  const head = { dim: true }
+  rows.push([cell('GB', COL.name, head), ...['self', 'child', 'ctr'].map(h => cell(h, COL.num, { ...head, right: true })), cell('agents', COL.agents, { ...head, right: true })])
   for (const r of b.rows)
-    lines.push([
-      { text: `${col(r.where, 16)} ${num(r.selfMB)} ${num(r.childMB)} ${num(r.containersMB)}  ${r.agents === null ? '-' : r.agents}`, strong: r.isSelf },
+    rows.push([
+      ...tableRow(r.where, [r.selfMB, r.childMB, r.containersMB], r.agents === null ? '–' : String(r.agents), { strong: r.isSelf }),
       ...(r.isSelf ? [{ text: '  ← this', dim: true }] : []),
     ])
-  if (b.desktopMB) lines.push([{ text: `${col('desktop app', 16)} ${num(b.desktopMB)}`, dim: true }])
-  if (b.dockerVmMB) lines.push([{ text: `${col('WSL/Docker VM', 16)} ${num(b.dockerVmMB)}`, dim: true }, { text: `  unattributed containers ${gb(b.unattributedContainersMB)}`, dim: true }])
-  lines.push([{ text: `${col('everything else', 16)} ${num(b.otherMB)}`, dim: true }, { text: '  browsers, system, the rest', dim: true }])
-  return lines
+  const other = { dim: true }
+  if (b.desktopMB) rows.push(tableRow('desktop app', [b.desktopMB, null, null], '', other))
+  if (b.dockerVmMB) rows.push(tableRow('WSL/Docker VM', [b.dockerVmMB, null, b.unattributedContainersMB], '', other).concat([{ text: '  ctr: no session', dim: true }]))
+  rows.push(tableRow('everything else', [b.otherMB, null, null], '', other).concat([{ text: '  browsers, system', dim: true }]))
+  return rows
 }
+
+/** A row as plain text, cells padded to their columns: the terminal's fallback and the tests'. */
+export const rowText = (row: CardRow) =>
+  row
+    .map(c => {
+      if (c.width === undefined) return c.text
+      const t = c.text.length > c.width ? c.text.slice(0, c.width - 1) + '…' : c.text
+      return c.right ? t.padStart(c.width) : t.padEnd(c.width)
+    })
+    .join('')
 
 const SPARK = '▁▂▃▄▅▆▇█'
 

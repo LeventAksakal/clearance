@@ -8,7 +8,7 @@ import {
   unlabeledFindings,
 } from './checks.ts'
 import { DEFAULTS, advance, floorMB } from './gate.ts'
-import { BUCKETS, MAX_SAMPLES, bucketOf, emptyPressure, fold, isPressured, isThrash, lastBusyProgress, learnFloor, parsePressure, type Pressure } from './pressure.ts'
+import { BUCKETS, MAX_SAMPLES, bucketOf, emptyPressure, fold, isPressured, isSameMachine, isThrash, lastBusyProgress, learnFloor, parsePressure, type Pressure } from './pressure.ts'
 import type { Snapshot } from './snapshot.ts'
 
 const TOTAL = 16_000 // 160 MB bins
@@ -74,6 +74,15 @@ describe('learned floor', () => {
     // and the gate uses it while the floor option is auto
     expect(floorMB({ ...DEFAULTS, learnedFloorMB: f.mb }, TOTAL)).toBe(2560)
     expect(floorMB({ ...DEFAULTS, minFreeGB: 1, learnedFloorMB: f.mb }, TOTAL)).toBe(1024)
+  })
+})
+
+describe('a histogram belongs to one RAM size', () => {
+  test('the same machine within 1%; new RAM sets the old histogram aside', () => {
+    const p = emptyPressure(15724)
+    expect(isSameMachine(p, 15724)).toBe(true)
+    expect(isSameMachine(p, 15724 + 100)).toBe(true)
+    expect(isSameMachine(p, 32108)).toBe(false)
   })
 })
 

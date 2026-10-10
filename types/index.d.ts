@@ -37,6 +37,8 @@ export type ClearanceBadge = {
   floorMB: number
   agentAskMB: number
   sessionAskMB: number
+  /** What the subagent ask rests on (a bound over runs, the largest seen, or the stand-in). */
+  agentBasis: string
   /** Every session's use, largest first, for the hover card. */
   rows: ClearanceBadgeRow[]
   /** RAM in use that no session owns: the desktop app, WSL, browsers, the rest of the machine. */

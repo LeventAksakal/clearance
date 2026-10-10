@@ -59,6 +59,12 @@ describe('pane lines', () => {
     expect(lines[5]?.text).toContain('1 min')
     expect(lines[6]?.text.startsWith('aaaaaaaa*')).toBe(true)
     for (const l of lines) expect(l.text.length).toBeLessThanOrEqual(100)
+    // table rows carry cells: fixed widths, numbers right-aligned, so a proportional font lines them up
+    for (const l of lines.slice(4, 7)) {
+      expect(l.cells?.slice(0, 6).every(c => typeof c.width === 'number')).toBe(true)
+      expect(l.cells?.[2]).toMatchObject({ right: true })
+    }
+    expect(lines[5]?.cells?.[3]?.text).toBe('1.5 (3)')
   })
 
   test('list the reasons under HOLD', () => {

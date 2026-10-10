@@ -1,6 +1,6 @@
 # clearance: design
 
-Status: v0.1.0, 2026-10-04; all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
+Status: v0.1.1, 2026-10-10 (v0.1.0 2026-10-04); all 7 steps built (see § Build findings). It is built on the decisions in wombraider-mods `docs/decisions/0001–0009` and on the API spike (all 7 checks passed on Claude Code 2.1.286).
 
 ## What it does
 
@@ -286,9 +286,15 @@ Open: an OOM-style bump (VPA ×1.2) once step 7 can tell that a forecast was too
 - **Checks** (`/clearance check`, read-only): Supabase `project_id` default or shared; compose projects without the label; hard-coded host ports in compose files (the session folder and one level down); host-port and project-name collisions among running containers.
 - **The snapshot replace** also retries on `UnauthorizedAccessException` (seen once live), not only `IOException`.
 
+### v0.1.1 (2026-10-10)
+
+- **The marshaller blinked** on every band redraw. The desktop rebuilds the band's DOM from the tree each time (`replaceWith`), and `Svg isInteractive` is a lazy sandboxed iframe: a new one blanks and restarts its SMIL from frame 0. Drawn as an image instead (no `isInteractive`): SMIL runs in an SVG image in Chromium, and a rebuilt `<img>` of the same data URL comes from the memory cache with its timeline still running. Checked side by side in Chromium: the rebuilt iframe blanks, the image doesn't. The badge's source only changes with the mood, so the image stays cached.
+- **Tabular hover card and pane:** the desktop draws text in a proportional font, so space-padded columns drifted. Each column is now a fixed-width Box (the desktop maps `width` to `ch`) with numbers right-aligned; the terminal draws the same cells.
+- **Asks under 1 GB in MB**, with the subagent ask's basis: before any measured run the stand-in is a live session's largest 5 s growth step, tens of MB, which read as `subagent 0.0 GB`.
+
 ### Step 7: THRASH, and the floor learned from paging
 
 - **Signal:** `\Memory\Pages Input/sec` through PDH in the sampler (`machine.pagesInPerSec`). Live: 800–4300 pages/s at 2–3 GB free on this machine.
 - **Histogram** (`pressure.json`, the scribe's to write, once a minute): available memory in bins of 1% of RAM against paging in power-of-two buckets; counts halve past 50,000 samples so old evidence fades.
-- **Floor** (`pressure.ts`): calm is the paging seen at or above the median available level; a bin below it is pressured when its median paging is above the calm p90; the floor is the top edge of the highest pressured bin with at least 22 samples. With no pressured bin yet, the policy floor (5% of RAM) stands. A set `minFreeGB` overrides both. The hover card and the pane say which applies and why.
+- **Floor** (`pressure.ts`): calm is the paging seen at or above the median available level; a bin below it is pressured when its median paging is above the calm p90; the floor is the top edge of the highest pressured bin with at least 22 samples. With no pressured bin yet, the policy floor (5% of RAM) stands. A set `minFreeGB` overrides both. A histogram belongs to one RAM size: when the total moves by more than 1% (policy), it is set aside as `pressure-<MB>.json` and the floor is learned again (found 2026-10-10: the machine went from 15.4 to 31.4 GB, and the 3.4 GB floor still rested on the 16 GB machine's paging). The hover card and the pane say which applies and why.
 - **THRASH:** 3 pressured samples in a row below the floor, or (the original rule) under half the floor with no busy session progressing for 5 minutes (a session waiting for its person is idle, not stalled). It settles with the same 2-sample hysteresis, refuses every local spawn (remote ones pass), turns the band red with a shaking marshaller, and toasts once per episode.

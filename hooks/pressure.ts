@@ -38,6 +38,16 @@ export type Pressure = {
 /** Halve every count past this many samples (about 2.9 days at 5 s): old evidence fades and the file stays small. */
 export const MAX_SAMPLES = 50_000
 
+/**
+ * Policy: RAM totals within this share are the same machine (the visible total
+ * moves by a few MB with drivers); past it the RAM changed, and paging seen on
+ * the old RAM says nothing about the new.
+ */
+export const SAME_MACHINE_SHARE = 0.01
+
+/** Whether the histogram was learned on a machine with this much RAM. */
+export const isSameMachine = (p: Pressure, totalMB: number) => Math.abs(p.totalMB - totalMB) <= totalMB * SAME_MACHINE_SHARE
+
 export const emptyPressure = (totalMB: number): Pressure => ({ schema: 1, binMB: Math.max(1, Math.round(totalMB / 100)), totalMB, bins: {}, n: 0, t: 0 })
 
 export const parsePressure = (text: string): Pressure | undefined => {
