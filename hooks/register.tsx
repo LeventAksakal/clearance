@@ -5,7 +5,7 @@ import { DIALOG, budgetLine, decideSpawn, divertSteps, headroomReport, withOwnAg
 import { describe, forecastAgent, forecastSession, type Forecast } from './forecast.ts'
 import { startGrowthWatch, startHistory, startTracker, type History, type Tracker } from './history.ts'
 import { checksReport, runChecks } from './checks.ts'
-import { emptyPressure, fold, isPressured, isThrash, lastBusyProgress, learnFloor, parsePressure, STALL_MS, type Floor, type Pressure } from './pressure.ts'
+import { emptyPressure, fold, isPressured, isSameMachine, isThrash, lastBusyProgress, learnFloor, parsePressure, STALL_MS, type Floor, type Pressure } from './pressure.ts'
 import { advance, floorMB, gate, gateOptions, type GateOptions, type GateView } from './gate.ts'
 import type { Io } from './io.ts'
 import { paneLines, paneModel, type Tone } from './pane.ts'
@@ -89,6 +89,8 @@ type Ctx = {
   sessionFixed: boolean
   /** The paging histogram: kept and written by the scribe, read by the others. */
   pressure: Pressure | undefined
+  /** The machine's RAM in the latest fresh sample: a histogram learned on other RAM is set aside. */
+  totalMB: number | undefined
   floor: Floor
   /** Pressured samples in a row (THRASH needs THRASH_RUN). */
   pressuredRun: number
@@ -114,7 +116,7 @@ const floorBasis = (ctx: Ctx) =>
 async function loadPressure($: EngineInterface, ctx: Ctx, path: string): Promise<void> {
   try {
     const p = parsePressure(await $.fs.read(path))
-    if (p) ctx.pressure = p
+    if (p && (ctx.totalMB === undefined || isSameMachine(p, ctx.totalMB))) ctx.pressure = p
   } catch {
     // no histogram yet
   }
@@ -201,6 +203,7 @@ export const register: Register = (on, options) => {
     growth: startGrowthWatch(),
     sessionFixed: opts.sessionBaselineGB > 0,
     pressure: undefined,
+    totalMB: undefined,
     floor: NO_FLOOR,
     pressuredRun: 0,
     inThrash: false,
@@ -298,6 +301,17 @@ export const register: Register = (on, options) => {
         let thrash: string | undefined = lastThrash
         if (fresh && fresh.t !== pressureT) {
           pressureT = fresh.t
+          ctx.totalMB = fresh.machine.totalMB
+          // The RAM changed: the histogram learned on the old RAM is kept aside
+          // (pressure-<MB>.json, by the scribe) and learning starts over.
+          const old = ctx.pressure
+          if (old && !isSameMachine(old, fresh.machine.totalMB)) {
+            ctx.pressure = undefined
+            relearnFloor(ctx)
+            sessionIo.log(`pressure: the histogram was learned on ${old.totalMB} MB of RAM, this machine has ${fresh.machine.totalMB} MB; learning the floor again`)
+            if (isScribe)
+              void $.fs.write(paths.pressure.replace(/\.json$/, `-${old.totalMB}.json`), JSON.stringify(old)).catch(err => sessionIo.log(`pressure archive: ${String(err)}`))
+          }
           const pages = fresh.machine.pagesInPerSec
           if (isScribe && pages !== undefined) {
             ctx.pressure = fold(ctx.pressure ?? emptyPressure(fresh.machine.totalMB), fresh.machine.availableMB, pages, fresh.t)
